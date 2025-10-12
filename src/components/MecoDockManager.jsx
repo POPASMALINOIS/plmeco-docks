@@ -1,6 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
@@ -8,14 +7,6 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { Download, FileUp, Plus, Trash2, X } from "lucide-react";
 import * as XLSX from "xlsx";
 import { motion } from "framer-motion";
-
-/**
- * PLMECO – Gestión de Muelles (WEB)
- * Fixes:
- * - Panel de muelle usa fila VIVA (lado + rowId) → inputs/selects editables de verdad.
- * - Columna MATRÍCULA con ancho extra para evitar cortes.
- * - Layout: derecha estrecha y vertical; tabla alta con header sticky.
- */
 
 // --------------------------- Constantes generales ---------------------------
 const DOCKS = [
@@ -53,7 +44,17 @@ const EXTRA_HEADERS = [
 const ALL_HEADERS = [...BASE_HEADERS, ...EXTRA_HEADERS];
 const EXPECTED_KEYS = [...ALL_HEADERS];
 
-// Alias de cabeceras
+// --------------------------- Utilidades comunes -----------------------------
+function norm(s) {
+  return (s ?? "")
+    .toString()
+    .replace(/\r?\n+/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .trim();
+}
 const HEADER_ALIASES = {
   "transportista": "TRANSPORTISTA",
   "transporte": "TRANSPORTISTA",
@@ -76,18 +77,6 @@ const HEADER_ALIASES = {
   "ok": "ESTADO",
   "fuera": "PRECINTO",
 };
-
-// --------------------------- Utilidades comunes -----------------------------
-function norm(s) {
-  return (s ?? "")
-    .toString()
-    .replace(/\r?\n+/g, " ")
-    .replace(/\s{2,}/g, " ")
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/\p{Diacritic}/gu, "")
-    .trim();
-}
 function mapHeader(name) {
   const n = norm(name);
   return HEADER_ALIASES[n] || (name ?? "").toString().toUpperCase().trim();
@@ -107,9 +96,9 @@ function coerceCell(v) {
   return String(v).replace(/\r?\n+/g, " ").replace(/\s{2,}/g, " ").trim();
 }
 
-// Autoancho por contenido (ancho en "ch")
+// Autoancho por contenido (ancho en "ch"); MATRÍCULA con extra
 function widthFromLen(len) {
-  const ch = Math.min(Math.max(len * 0.7 + 3, 10), 56); // subo máximo a 56ch
+  const ch = Math.min(Math.max(len * 0.7 + 3, 10), 56);
   return `${Math.round(ch)}ch`;
 }
 function computeColumnTemplate(rows) {
@@ -118,26 +107,19 @@ function computeColumnTemplate(rows) {
       (h || "").length,
       ...rows.map(r => ((r?.[h] ?? "") + "").length)
     );
-    // MATRÍCULA → ancho extra para que no se corte
-    if (h === "MATRICULA") return widthFromLen(maxLen + 6); // +6ch extra
+    if (h === "MATRICULA") return widthFromLen(maxLen + 6);
     return widthFromLen(maxLen);
   });
-  return `${widths.join(" ")} 8rem`; // última = Acciones
+  return `${widths.join(" ")} 8rem`;
 }
 
 // ---------------------------- Persistencia local ----------------------------
 function useLocalStorage(key, initial) {
   const [state, setState] = useState(() => {
-    try {
-      const raw = localStorage.getItem(key);
-      return raw ? JSON.parse(raw) : initial;
-    } catch {
-      return initial;
-    }
+    try { const raw = localStorage.getItem(key); return raw ? JSON.parse(raw) : initial; }
+    catch { return initial; }
   });
-  useEffect(() => {
-    try { localStorage.setItem(key, JSON.stringify(state)); } catch {}
-  }, [key, state]);
+  useEffect(() => { try { localStorage.setItem(key, JSON.stringify(state)); } catch {} }, [key, state]);
   return [state, setState];
 }
 
@@ -145,16 +127,12 @@ function useLocalStorage(key, initial) {
 function useRealtimeSync(state, setState) {
   const bcRef = useRef(null);
   const wsRef = useRef(null);
-
   useEffect(() => {
     try { bcRef.current = new BroadcastChannel("meco-docks"); } catch {}
     const bc = bcRef.current;
-    const onMsg = (ev) => {
-      const data = ev && ev.data;
-      if (data && data.type === "APP_STATE") setState(data.payload);
-    };
-    bc && bc.addEventListener && bc.addEventListener("message", onMsg);
-    return () => bc && bc.removeEventListener && bc.removeEventListener("message", onMsg);
+    const onMsg = (ev) => { const data = ev && ev.data; if (data?.type === "APP_STATE") setState(data.payload); };
+    bc?.addEventListener?.("message", onMsg);
+    return () => bc?.removeEventListener?.("message", onMsg);
   }, [setState]);
 
   useEffect(() => {
@@ -163,12 +141,7 @@ function useRealtimeSync(state, setState) {
     const ws = new WebSocket(url);
     wsRef.current = ws;
     ws.onopen = () => { try { ws.send(JSON.stringify({ type: "HELLO", role: "client" })); } catch {} };
-    ws.onmessage = (e) => {
-      try {
-        const msg = JSON.parse(e.data);
-        if (msg && msg.type === "APP_STATE") setState(msg.payload);
-      } catch {}
-    };
+    ws.onmessage = (e) => { try { const msg = JSON.parse(e.data); if (msg?.type === "APP_STATE") setState(msg.payload); } catch {} };
     return () => { try { ws.close(); } catch {} };
   }, [setState]);
 
@@ -182,22 +155,17 @@ function useRealtimeSync(state, setState) {
 function deriveDocks(lados) {
   const dockMap = new Map();
   DOCKS.forEach((d) => dockMap.set(d, { state: "LIBRE" }));
-
   Object.keys(lados).forEach((ladoName) => {
     lados[ladoName].rows.forEach((row) => {
       const muNum = Number(String(row.MUELLE ?? "").trim());
       if (!Number.isFinite(muNum) || !DOCKS.includes(muNum)) return;
-
       const llegadaReal = (row["LLEGADA REAL"] || "").trim();
       const salidaReal  = (row["SALIDA REAL"]  || "").trim();
-
       let state = "ESPERA";
       if (llegadaReal) state = "OCUPADO";
       if (salidaReal)  state = "LIBRE";
-
-      if (state !== "LIBRE") {
-        dockMap.set(muNum, { state, row, lado: ladoName });
-      } else {
+      if (state !== "LIBRE") dockMap.set(muNum, { state, row, lado: ladoName });
+      else {
         if (dockMap.has(muNum)) {
           const prev = dockMap.get(muNum);
           if (prev.state !== "OCUPADO") dockMap.set(muNum, { state: "LIBRE" });
@@ -218,104 +186,7 @@ function estadoBadgeColor(estado) {
   return "bg-emerald-600";
 }
 
-// ------------------------------- Editables ----------------------------------
-function SelectNative({ value, onChange, options, placeholder = "Seleccionar", className="" }) {
-  const v = (value ?? "").toString();
-  return (
-    <select
-      className={`h-8 w-full border rounded px-2 bg-white text-sm ${className}`}
-      value={v}
-      onChange={(e) => onChange(e.target.value)}
-    >
-      <option value="">{placeholder}</option>
-      {options.map(opt => (
-        <option key={opt} value={opt}>{opt}</option>
-      ))}
-    </select>
-  );
-}
-function EditableCell({ value, onChange, type = "text", className = "", options }) {
-  if (type === "select" && options) {
-    return <SelectNative value={value} onChange={onChange} options={options} className={className} />;
-  }
-  return (
-    <Input
-      value={(value ?? "").toString()}
-      onChange={(e) => onChange(e.target.value)}
-      className={`h-8 ${className}`}
-      type={type === "number" ? "number" : "text"}
-    />
-  );
-}
-function Header({ title }) {
-  return (
-    <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">
-      {title}
-    </div>
-  );
-}
-
-// ------------------------------ Importador XLSX -----------------------------
-function expandHeaderMerges(ws, headerRowIdx) {
-  const merges = ws["!merges"] || [];
-  merges.forEach((m) => {
-    if (m.s.r <= headerRowIdx && m.e.r >= headerRowIdx) {
-      const srcAddr = XLSX.utils.encode_cell({ r: m.s.r, c: m.s.c });
-      const src = ws[srcAddr];
-      if (!src || !src.v) return;
-      const text = coerceCell(src.v);
-      for (let c = m.s.c; c <= m.e.c; c++) {
-        const addr = XLSX.utils.encode_cell({ r: headerRowIdx, c });
-        const cell = ws[addr] || (ws[addr] = {});
-        cell.v = text;
-        cell.t = "s";
-      }
-    }
-  });
-}
-function tryParseSheet(ws, sheetName) {
-  const rows2D = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
-  let headerRowIdx = -1, bestScore = -1, limit = Math.min(rows2D.length, 40);
-  for (let r = 0; r < limit; r++) {
-    const mapped = (rows2D[r] || []).map((h) => mapHeader(h));
-    const score = mapped.reduce((acc, h) => acc + (EXPECTED_KEYS.includes(h) ? 1 : 0), 0);
-    if (score > bestScore) { bestScore = score; headerRowIdx = r; }
-  }
-  if (headerRowIdx < 0) headerRowIdx = 0;
-  expandHeaderMerges(ws, headerRowIdx);
-
-  let ws2 = ws;
-  if (ws["!ref"]) {
-    const range = XLSX.utils.decode_range(ws["!ref"]);
-    range.s.r = headerRowIdx;
-    ws2 = { ...ws, "!ref": XLSX.utils.encode_range(range) };
-  }
-
-  const json = XLSX.utils.sheet_to_json(ws2, { defval: "", raw: false });
-  const rows = [];
-  const seenHeaders = new Set();
-
-  json.forEach((row) => {
-    const obj = {};
-    Object.keys(row).forEach((kRaw) => {
-      const k = mapHeader(kRaw);
-      seenHeaders.add(k);
-      obj[k] = coerceCell(row[kRaw]);
-    });
-    for (const h of EXPECTED_KEYS) if (!(h in obj)) obj[h] = "";
-
-    const keysMin = ["TRANSPORTISTA","MATRICULA","DESTINO","LLEGADA","SALIDA","OBSERVACIONES"];
-    const allEmpty = keysMin.every(k => String(obj[k] || "").trim() === "");
-    if (allEmpty) return;
-
-    if (!obj["ESTADO"]) obj["ESTADO"] = "OK";
-    rows.push({ id: crypto.randomUUID(), ...obj });
-  });
-
-  return { sheetName, headerRowIdx, bestScore, headers: Array.from(seenHeaders), rows };
-}
-
-// ------------------------------- Componente App -----------------------------
+// ------------------------------- Componente ---------------------------------
 export default function MecoDockManager() {
   const [app, setApp] = useLocalStorage("meco-app", {
     lados: Object.fromEntries(LADOS.map((n) => [n, { name: n, rows: [] }]))
@@ -323,18 +194,13 @@ export default function MecoDockManager() {
   const [active, setActive] = useState(LADOS[0]);
   const [filterEstado, setFilterEstado] = useState("TODOS");
   const [clock, setClock] = useState(nowISO());
-  // Panel ahora guarda: open, dock, lado y rowId (no el objeto row completo)
+  // Panel guarda lado + rowId (acceso a fila viva)
   const [dockPanel, setDockPanel] = useState({ open: false, dock: undefined, lado: undefined, rowId: undefined });
   const [debugOpen, setDebugOpen] = useState(false);
   const [importInfo, setImportInfo] = useState(null);
 
   useRealtimeSync(app, setApp);
-
-  useEffect(() => {
-    const t = setInterval(() => setClock(nowISO()), 1000);
-    return () => clearInterval(t);
-  }, []);
-
+  useEffect(() => { const t = setInterval(() => setClock(nowISO()), 1000); return () => clearInterval(t); }, []);
   const docks = useMemo(() => deriveDocks(app.lados), [app]);
 
   function updateRow(lado, id, patch) {
@@ -345,16 +211,10 @@ export default function MecoDockManager() {
   }
   function addRow(lado) {
     const newRow = { id: crypto.randomUUID(), ESTADO: "OK" };
-    setApp((prev) => ({
-      ...prev,
-      lados: { ...prev.lados, [lado]: { ...prev.lados[lado], rows: [newRow, ...prev.lados[lado].rows] } },
-    }));
+    setApp((prev) => ({ ...prev, lados: { ...prev.lados, [lado]: { ...prev.lados[lado], rows: [newRow, ...prev.lados[lado].rows] } } }));
   }
   function removeRow(lado, id) {
-    setApp((prev) => ({
-      ...prev,
-      lados: { ...prev.lados, [lado]: { ...prev.lados[lado], rows: prev.lados[lado].rows.filter((r) => r.id !== id) } },
-    }));
+    setApp((prev) => ({ ...prev, lados: { ...prev.lados, [lado]: { ...prev.lados[lado], rows: prev.lados[lado].rows.filter((r) => r.id !== id) } } }));
   }
   function clearLado(lado) {
     setApp((prev) => ({ ...prev, lados: { ...prev.lados, [lado]: { ...prev.lados[lado], rows: [] } } }));
@@ -373,44 +233,76 @@ export default function MecoDockManager() {
           const parsed = tryParseSheet(ws, name);
           results.push(parsed);
         }
-        results.sort((a, b) => {
-          if (b.rows.length !== a.rows.length) return b.rows.length - a.rows.length;
-          return b.bestScore - a.bestScore;
-        });
+        results.sort((a, b) => (b.rows.length - a.rows.length) || (b.bestScore - a.bestScore));
         const best = results[0] || null;
 
         setImportInfo({
-          sheetsTried: results.map(r => ({
-            sheet: r.sheetName,
-            headerRowIdx: r.headerRowIdx,
-            bestScore: r.bestScore,
-            headers: r.headers,
-            rows: r.rows.length
-          })),
-          chosen: best ? {
-            sheet: best.sheetName,
-            headerRowIdx: best.headerRowIdx,
-            bestScore: best.bestScore,
-            headers: best.headers,
-            rows: best.rows.length
-          } : null,
+          sheetsTried: results.map(r => ({ sheet: r.sheetName, headerRowIdx: r.headerRowIdx, bestScore: r.bestScore, headers: r.headers, rows: r.rows.length })),
+          chosen: best ? { sheet: best.sheetName, headerRowIdx: best.headerRowIdx, bestScore: best.bestScore, headers: best.headers, rows: best.rows.length } : null,
         });
 
         const rows = best?.rows ?? [];
-        setApp((prev) => ({
-          ...prev,
-          lados: { ...prev.lados, [lado]: { ...prev.lados[lado], rows } },
-        }));
-
-        if (!rows.length) {
-          alert("No se han detectado filas con datos. Revisa que el Excel tenga cabeceras reconocibles y datos debajo.");
-        }
-      } catch (err) {
-        console.error(err);
-        alert("Error al leer el Excel. ¿Es un .xlsx válido?");
-      }
+        setApp((prev) => ({ ...prev, lados: { ...prev.lados, [lado]: { ...prev.lados[lado], rows } } }));
+        if (!rows.length) alert("No se han detectado filas con datos. Revisa cabeceras y datos.");
+      } catch (err) { console.error(err); alert("Error al leer el Excel. ¿Es un .xlsx válido?"); }
     };
     reader.readAsArrayBuffer(file);
+  }
+
+  function tryParseSheet(ws, sheetName) {
+    const rows2D = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
+    let headerRowIdx = -1, bestScore = -1, limit = Math.min(rows2D.length, 40);
+    for (let r = 0; r < limit; r++) {
+      const mapped = (rows2D[r] || []).map((h) => mapHeader(h));
+      const score = mapped.reduce((acc, h) => acc + (EXPECTED_KEYS.includes(h) ? 1 : 0), 0);
+      if (score > bestScore) { bestScore = score; headerRowIdx = r; }
+    }
+    if (headerRowIdx < 0) headerRowIdx = 0;
+    expandHeaderMerges(ws, headerRowIdx);
+
+    let ws2 = ws;
+    if (ws["!ref"]) {
+      const range = XLSX.utils.decode_range(ws["!ref"]);
+      range.s.r = headerRowIdx;
+      ws2 = { ...ws, "!ref": XLSX.utils.encode_range(range) };
+    }
+
+    const json = XLSX.utils.sheet_to_json(ws2, { defval: "", raw: false });
+    const rows = [];
+    const seenHeaders = new Set();
+
+    json.forEach((row) => {
+      const obj = {};
+      Object.keys(row).forEach((kRaw) => {
+        const k = mapHeader(kRaw);
+        seenHeaders.add(k);
+        obj[k] = coerceCell(row[kRaw]);
+      });
+      for (const h of ALL_HEADERS) if (!(h in obj)) obj[h] = "";
+      const keysMin = ["TRANSPORTISTA","MATRICULA","DESTINO","LLEGADA","SALIDA","OBSERVACIONES"];
+      const allEmpty = keysMin.every(k => String(obj[k] || "").trim() === "");
+      if (allEmpty) return;
+      if (!obj["ESTADO"]) obj["ESTADO"] = "OK";
+      rows.push({ id: crypto.randomUUID(), ...obj });
+    });
+
+    return { sheetName, headerRowIdx, bestScore, headers: Array.from(seenHeaders), rows };
+  }
+  function expandHeaderMerges(ws, headerRowIdx) {
+    const merges = ws["!merges"] || [];
+    merges.forEach((m) => {
+      if (m.s.r <= headerRowIdx && m.e.r >= headerRowIdx) {
+        const srcAddr = XLSX.utils.encode_cell({ r: m.s.r, c: m.s.c });
+        const src = ws[srcAddr];
+        if (!src || !src.v) return;
+        const text = coerceCell(src.v);
+        for (let c = m.s.c; c <= m.e.c; c++) {
+          const addr = XLSX.utils.encode_cell({ r: headerRowIdx, c });
+          const cell = ws[addr] || (ws[addr] = {});
+          cell.v = text; cell.t = "s";
+        }
+      }
+    });
   }
 
   function filteredRows(lado) {
@@ -427,7 +319,6 @@ export default function MecoDockManager() {
     </div>
   );
 
-  // --- Layout: 2 columnas (principal + derecha fija 290px) ---
   return (
     <TooltipProvider>
       <div className="w-full min-h-screen p-3 md:p-5 bg-gradient-to-b from-slate-50 to-white">
@@ -439,8 +330,9 @@ export default function MecoDockManager() {
           </div>
         </header>
 
+        {/* 2 columnas: principal + derecha 290px */}
         <div className="grid gap-3" style={{ gridTemplateColumns: "minmax(0,1fr) 290px" }}>
-          {/* Columna izquierda: pestañas + tabla */}
+          {/* Izquierda: pestañas + tabla */}
           <Card>
             <CardHeader className="pb-2">
               <div className="flex items-center justify-between">
@@ -481,9 +373,7 @@ export default function MecoDockManager() {
 
               <Tabs value={active} onValueChange={setActive}>
                 <TabsList className="flex flex-wrap">
-                  {LADOS.map((n) => (
-                    <TabsTrigger key={n} value={n} className="px-3">{n}</TabsTrigger>
-                  ))}
+                  {LADOS.map((n) => <TabsTrigger key={n} value={n} className="px-3">{n}</TabsTrigger>)}
                 </TabsList>
 
                 <div className="mt-3">
@@ -503,13 +393,9 @@ export default function MecoDockManager() {
                   return (
                     <TabsContent key={n} value={n} className="mt-3">
                       <div className="border rounded-xl overflow-hidden">
-                        {/* ÚNICO contenedor con scroll h+v; header sticky */}
                         <div className="overflow-auto max-h-[84vh]">
-                          {/* Header */}
-                          <div
-                            className="grid bg-slate-200 sticky top-0 z-10"
-                            style={{ gridTemplateColumns: gridTemplate }}
-                          >
+                          {/* Header sticky */}
+                          <div className="grid bg-slate-200 sticky top-0 z-10" style={{ gridTemplateColumns: gridTemplate }}>
                             {ALL_HEADERS.map((h) => (
                               <div key={h} className="bg-slate-50 p-2 border-r border-slate-200">
                                 <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">{h}</div>
@@ -519,19 +405,13 @@ export default function MecoDockManager() {
                               <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">Acciones</div>
                             </div>
                           </div>
-
                           {/* Filas */}
                           <div>
                             {filteredRows(n).map((row) => (
-                              <div
-                                key={row.id}
-                                className="grid bg-white border-t border-slate-200"
-                                style={{ gridTemplateColumns: gridTemplate }}
-                              >
+                              <div key={row.id} className="grid bg-white border-t border-slate-200" style={{ gridTemplateColumns: gridTemplate }}>
                                 {ALL_HEADERS.map((h) => {
                                   const isEstado = h === "ESTADO";
                                   const isInc    = h === "INCIDENCIAS";
-                                  const isText   = !isEstado && !isInc;
                                   return (
                                     <div key={h} className="p-1 border-r border-slate-100 flex items-center">
                                       {isEstado ? (
@@ -553,11 +433,10 @@ export default function MecoDockManager() {
                                           {INCIDENTES.map(opt => <option key={opt} value={opt}>{opt}</option>)}
                                         </select>
                                       ) : (
-                                        <EditableCell
-                                          value={row[h]}
-                                          onChange={(v) => updateRow(n, row.id, { [h]: v })}
-                                          type={isText ? "text" : "select"}
-                                          className="rounded-none border-0 bg-white"
+                                        <input
+                                          className="h-8 w-full border rounded px-2 bg-white text-sm"
+                                          value={(row[h] ?? "").toString()}
+                                          onChange={(e) => updateRow(n, row.id, { [h]: e.target.value })}
                                         />
                                       )}
                                     </div>
@@ -580,7 +459,7 @@ export default function MecoDockManager() {
             </CardContent>
           </Card>
 
-          {/* Columna derecha: estrecha (290px) y muy vertical */}
+          {/* Derecha: estrecha (290px) y vertical */}
           <Card className="w-[290px]">
             <CardHeader className="pb-2 flex flex-col gap-2">
               <CardTitle className="text-base">Muelles (tiempo real)</CardTitle>
@@ -595,25 +474,23 @@ export default function MecoDockManager() {
                   const tooltip = info.row
                     ? `${label} • ${info.row.MATRICULA || "?"} • ${info.row.DESTINO || "?"} • ${(info.row.ESTADO || "OK")}`
                     : `${label} • Libre`;
-                  return (
+
+                  const btn = (
+                    <motion.button
+                      whileTap={{ scale: 0.96 }}
+                      onClick={() => setDockPanel({ open: true, dock: d, lado: info.lado, rowId: info.row?.id })}
+                      className={`h-9 rounded-xl text-white text-sm font-semibold shadow ${color}`}
+                    >
+                      {label}
+                    </motion.button>
+                  );
+                  // Cuando el panel está abierto, no montamos tooltip para evitar portales encima
+                  return dockPanel.open ? (
+                    <div key={d}>{btn}</div>
+                  ) : (
                     <Tooltip key={d}>
-                      <TooltipTrigger asChild>
-                        <motion.button
-                          whileTap={{ scale: 0.96 }}
-                          onClick={() => setDockPanel({
-                            open: true,
-                            dock: d,
-                            lado: info.lado,
-                            rowId: info.row?.id
-                          })}
-                          className={`h-9 rounded-xl text-white text-sm font-semibold shadow ${color}`}
-                        >
-                          {label}
-                        </motion.button>
-                      </TooltipTrigger>
-                      <TooltipContent>
-                        <p>{tooltip}</p>
-                      </TooltipContent>
+                      <TooltipTrigger asChild>{btn}</TooltipTrigger>
+                      <TooltipContent><p>{tooltip}</p></TooltipContent>
                     </Tooltip>
                   );
                 })}
@@ -622,16 +499,18 @@ export default function MecoDockManager() {
           </Card>
         </div>
 
-        {/* Drawer lateral propio – usa fila VIVA por lado+rowId */}
+        {/* Overlay + Drawer con z-index máximo y captura de eventos */}
         {dockPanel.open && (
           <>
-            {/* Fondo */}
             <div
-              className="fixed inset-0 bg-black/30 z-[60]"
+              className="fixed inset-0 bg-black/30 z-[9998]"
               onClick={() => setDockPanel({ open: false, dock: undefined, lado: undefined, rowId: undefined })}
             />
-            {/* Panel */}
-            <div className="fixed right-0 top-0 h-screen w-[280px] sm:w-[320px] bg-white z-[70] shadow-2xl border-l">
+            <div
+              className="fixed right-0 top-0 h-screen w-[280px] sm:w-[320px] bg-white z-[9999] shadow-2xl border-l pointer-events-auto"
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => e.stopPropagation()}
+            >
               <div className="flex items-center justify-between px-4 py-3 border-b">
                 <div className="font-semibold">Muelle {dockPanel.dock}</div>
                 <Button
@@ -646,10 +525,8 @@ export default function MecoDockManager() {
                 {(() => {
                   const { lado, rowId } = dockPanel;
                   if (!lado || !rowId) return <div className="text-emerald-600 font-medium">Muelle libre</div>;
-                  // <<< FILA VIVA DESDE EL ESTADO >>>
-                  const liveRow = app.lados[lado]?.rows.find(r => r.id === rowId);
-                  if (!liveRow) return <div className="text-muted-foreground">No se encontró la fila.</div>;
-                  const r = liveRow;
+                  const r = app.lados[lado]?.rows.find(rr => rr.id === rowId);
+                  if (!r) return <div className="text-muted-foreground">No se encontró la fila.</div>;
 
                   return (
                     <div className="space-y-2">
@@ -672,16 +549,18 @@ export default function MecoDockManager() {
 
                       <div className="grid grid-cols-2 gap-2 pt-2">
                         <div>
-                          <Header title="Llegada real" />
-                          <Input
+                          <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">Llegada real</div>
+                          <input
+                            className="h-9 w-full border rounded px-2 bg-white text-sm"
                             value={(r["LLEGADA REAL"] ?? "").toString()}
                             onChange={(e) => updateRow(lado, r.id, { "LLEGADA REAL": e.target.value })}
                             placeholder="hh:mm / ISO"
                           />
                         </div>
                         <div>
-                          <Header title="Salida real" />
-                          <Input
+                          <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">Salida real</div>
+                          <input
+                            className="h-9 w-full border rounded px-2 bg-white text-sm"
                             value={(r["SALIDA REAL"] ?? "").toString()}
                             onChange={(e) => updateRow(lado, r.id, { "SALIDA REAL": e.target.value })}
                             placeholder="hh:mm / ISO"
@@ -691,8 +570,9 @@ export default function MecoDockManager() {
 
                       <div className="grid grid-cols-2 gap-2">
                         <div>
-                          <Header title="Muelle" />
-                          <Input
+                          <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">Muelle</div>
+                          <input
+                            className="h-9 w-full border rounded px-2 bg-white text-sm"
                             value={(r["MUELLE"] ?? "").toString()}
                             onChange={(e) => updateRow(lado, r.id, { MUELLE: e.target.value })}
                             placeholder="nº muelle"
@@ -700,8 +580,9 @@ export default function MecoDockManager() {
                           <div className="text-[10px] text-muted-foreground mt-0.5">* Se valida en la parrilla</div>
                         </div>
                         <div>
-                          <Header title="Precinto" />
-                          <Input
+                          <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">Precinto</div>
+                          <input
+                            className="h-9 w-full border rounded px-2 bg-white text-sm"
                             value={(r["PRECINTO"] ?? "").toString()}
                             onChange={(e) => updateRow(lado, r.id, { "PRECINTO": e.target.value })}
                             placeholder="Precinto"
@@ -711,26 +592,33 @@ export default function MecoDockManager() {
 
                       <div className="grid grid-cols-2 gap-2">
                         <div>
-                          <Header title="Incidencias" />
-                          <SelectNative
-                            value={r["INCIDENCIAS"]}
-                            onChange={(v) => updateRow(lado, r.id, { "INCIDENCIAS": v })}
-                            options={INCIDENTES}
-                          />
+                          <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">Incidencias</div>
+                          <select
+                            className="h-9 w-full border rounded px-2 bg-white text-sm"
+                            value={(r["INCIDENCIAS"] ?? "").toString()}
+                            onChange={(e) => updateRow(lado, r.id, { "INCIDENCIAS": e.target.value })}
+                          >
+                            <option value="">Seleccionar</option>
+                            {INCIDENTES.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                          </select>
                         </div>
                         <div>
-                          <Header title="Estado" />
-                          <SelectNative
-                            value={r["ESTADO"]}
-                            onChange={(v) => updateRow(lado, r.id, { "ESTADO": v })}
-                            options={CAMION_ESTADOS}
-                          />
+                          <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">Estado</div>
+                          <select
+                            className="h-9 w-full border rounded px-2 bg-white text-sm"
+                            value={(r["ESTADO"] ?? "").toString()}
+                            onChange={(e) => updateRow(lado, r.id, { "ESTADO": e.target.value })}
+                          >
+                            <option value="">Seleccionar</option>
+                            {CAMION_ESTADOS.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                          </select>
                         </div>
                       </div>
 
                       <div className="pt-2">
-                        <Header title="Observaciones" />
-                        <Input
+                        <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">Observaciones</div>
+                        <input
+                          className="h-9 w-full border rounded px-2 bg-white text-sm"
                           value={(r.OBSERVACIONES ?? "").toString()}
                           onChange={(e) => updateRow(lado, r.id, { OBSERVACIONES: e.target.value })}
                           placeholder="Añade notas"
@@ -754,9 +642,7 @@ export default function MecoDockManager() {
 }
 
 // ------------------------------ Toolbar -------------------------------------
-function ToolbarX({
-  onImport, onAddRow, onClear, filterEstado, setFilterEstado, onExport,
-}) {
+function ToolbarX({ onImport, onAddRow, onClear, filterEstado, setFilterEstado, onExport }) {
   const fileRef = useRef(null);
   return (
     <div className="flex items-center gap-2 flex-wrap">
