@@ -12,10 +12,10 @@ import { motion } from "framer-motion";
 
 /**
  * PLMECO – Gestión de Muelles (WEB)
- * - MUELLE editable como texto (validación diferida en parrilla).
- * - Selects de ESTADO/INCIDENCIAS con <select> nativo (funciona siempre).
- * - Contenedor tabla alto (84vh) con header sticky y auto-ancho de columnas.
- * - Panel de muelle estrecho y a pantalla completa.
+ * Cambios clave en esta versión:
+ * - Selects de ESTADO e INCIDENCIAS con <select> nativo y control mínimo (siempre reflejan valor).
+ * - Layout de 2 columnas con derecha estrecha (290px) y muelles más verticales.
+ * - Tabla alta (84vh), header sticky, auto-ancho por contenido.
  */
 
 // --------------------------- Constantes generales ---------------------------
@@ -217,9 +217,8 @@ function estadoBadgeColor(estado) {
   return "bg-emerald-600";
 }
 
-// ------------------------------- Celdas editables ---------------------------
+// ------------------------------- Editables ----------------------------------
 function SelectNative({ value, onChange, options, placeholder = "Seleccionar", className="" }) {
-  // value siempre string; placeholder como opción vacía
   const v = (value ?? "").toString();
   return (
     <select
@@ -234,7 +233,6 @@ function SelectNative({ value, onChange, options, placeholder = "Seleccionar", c
     </select>
   );
 }
-
 function EditableCell({ value, onChange, type = "text", className = "", options }) {
   if (type === "select" && options) {
     return <SelectNative value={value} onChange={onChange} options={options} className={className} />;
@@ -248,7 +246,6 @@ function EditableCell({ value, onChange, type = "text", className = "", options 
     />
   );
 }
-
 function Header({ title }) {
   return (
     <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">
@@ -275,10 +272,8 @@ function expandHeaderMerges(ws, headerRowIdx) {
     }
   });
 }
-
 function tryParseSheet(ws, sheetName) {
   const rows2D = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
-
   let headerRowIdx = -1, bestScore = -1, limit = Math.min(rows2D.length, 40);
   for (let r = 0; r < limit; r++) {
     const mapped = (rows2D[r] || []).map((h) => mapHeader(h));
@@ -286,7 +281,6 @@ function tryParseSheet(ws, sheetName) {
     if (score > bestScore) { bestScore = score; headerRowIdx = r; }
   }
   if (headerRowIdx < 0) headerRowIdx = 0;
-
   expandHeaderMerges(ws, headerRowIdx);
 
   let ws2 = ws;
@@ -314,7 +308,6 @@ function tryParseSheet(ws, sheetName) {
     if (allEmpty) return;
 
     if (!obj["ESTADO"]) obj["ESTADO"] = "OK";
-
     rows.push({ id: crypto.randomUUID(), ...obj });
   });
 
@@ -425,16 +418,17 @@ export default function MecoDockManager() {
   }
 
   const legend = (
-    <div className="flex items-center gap-4 text-xs text-muted-foreground">
+    <div className="flex items-center gap-3 text-[11px] text-muted-foreground">
       <div className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded bg-emerald-500" /> Libre</div>
       <div className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded bg-amber-500" /> Espera</div>
       <div className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded bg-red-600" /> Ocupado</div>
     </div>
   );
 
+  // --- Layout: 2 columnas (principal + derecha fija 290px) ---
   return (
     <TooltipProvider>
-      <div className="w-full min-h-screen p-4 md:p-6 bg-gradient-to-b from-slate-50 to-white">
+      <div className="w-full min-h-screen p-3 md:p-5 bg-gradient-to-b from-slate-50 to-white">
         <header className="flex items-center gap-2 justify-between mb-3">
           <h1 className="text-2xl font-bold tracking-tight">PLMECO · Gestión de Muelles</h1>
           <div className="text-right">
@@ -443,9 +437,10 @@ export default function MecoDockManager() {
           </div>
         </header>
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+        <div className="grid gap-3"
+             style={{ gridTemplateColumns: "minmax(0,1fr) 290px" }}>
           {/* Columna izquierda: pestañas + tabla */}
-          <Card className="lg:col-span-2">
+          <Card className="">
             <CardHeader className="pb-2">
               <div className="flex items-center justify-between">
                 <CardTitle>Operativas por lado</CardTitle>
@@ -535,26 +530,35 @@ export default function MecoDockManager() {
                                 {ALL_HEADERS.map((h) => {
                                   const isEstado = h === "ESTADO";
                                   const isInc    = h === "INCIDENCIAS";
-                                  const isText = !isEstado && !isInc;
+                                  const isText   = !isEstado && !isInc;
                                   return (
                                     <div key={h} className="p-1 border-r border-slate-100 flex items-center">
-                                      <EditableCell
-                                        value={row[h]}
-                                        onChange={(v) => {
-                                          if (isEstado) {
-                                            const val = (v || "").toString().trim();
-                                            return updateRow(n, row.id, { ESTADO: CAMION_ESTADOS.includes(val) ? val : "" });
-                                          }
-                                          if (isInc) {
-                                            const val = (v || "").toString().trim();
-                                            return updateRow(n, row.id, { INCIDENCIAS: INCIDENTES.includes(val) ? val : "" });
-                                          }
-                                          updateRow(n, row.id, { [h]: v });
-                                        }}
-                                        type={isText ? "text" : "select"}
-                                        options={isEstado ? CAMION_ESTADOS : isInc ? INCIDENTES : undefined}
-                                        className="rounded-none border-0 bg-white"
-                                      />
+                                      {isEstado ? (
+                                        <select
+                                          className="h-8 w-full border rounded px-2 bg-white text-sm"
+                                          value={(row.ESTADO ?? "").toString()}
+                                          onChange={(e)=>updateRow(n, row.id, { ESTADO: e.target.value })}
+                                        >
+                                          <option value="">Seleccionar</option>
+                                          {CAMION_ESTADOS.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                                        </select>
+                                      ) : isInc ? (
+                                        <select
+                                          className="h-8 w-full border rounded px-2 bg-white text-sm"
+                                          value={(row.INCIDENCIAS ?? "").toString()}
+                                          onChange={(e)=>updateRow(n, row.id, { INCIDENCIAS: e.target.value })}
+                                        >
+                                          <option value="">Seleccionar</option>
+                                          {INCIDENTES.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                                        </select>
+                                      ) : (
+                                        <EditableCell
+                                          value={row[h]}
+                                          onChange={(v) => updateRow(n, row.id, { [h]: v })}
+                                          type={isText ? "text" : "select"}
+                                          className="rounded-none border-0 bg-white"
+                                        />
+                                      )}
                                     </div>
                                   );
                                 })}
@@ -575,14 +579,15 @@ export default function MecoDockManager() {
             </CardContent>
           </Card>
 
-          {/* Columna derecha: estado de muelles (vertical, sticky) */}
-          <Card className="lg:col-span-1 lg:sticky lg:top-4 self-start">
+          {/* Columna derecha: estrecha (290px) y muy vertical */}
+          <Card className="w-[290px]">
             <CardHeader className="pb-2 flex flex-col gap-2">
-              <CardTitle>Muelles (tiempo real)</CardTitle>
+              <CardTitle className="text-base">Muelles (tiempo real)</CardTitle>
               {legend}
             </CardHeader>
             <CardContent className="max-h-[84vh] overflow-auto">
-              <div className="grid grid-cols-3 md:grid-cols-4 gap-2">
+              {/* 2 columnas en móviles, 3 a partir de 380px aprox. */}
+              <div className="grid grid-cols-2 xs:grid-cols-3 gap-2">
                 {DOCKS.map((d) => {
                   const info = docks.get(d) || { state: "LIBRE" };
                   const color = dockColor(info.state);
@@ -596,7 +601,7 @@ export default function MecoDockManager() {
                         <motion.button
                           whileTap={{ scale: 0.96 }}
                           onClick={() => setDockPanel({ open: true, dock: d, info })}
-                          className={`h-10 rounded-2xl text-white text-sm font-semibold shadow ${color}`}
+                          className={`h-9 rounded-xl text-white text-sm font-semibold shadow ${color}`}
                         >
                           {label}
                         </motion.button>
@@ -614,7 +619,7 @@ export default function MecoDockManager() {
 
         {/* Panel lateral info de muelle – estrecho y alto completo */}
         <Sheet open={dockPanel.open} onOpenChange={(o) => setDockPanel((p) => ({ ...p, open: o }))}>
-          <SheetContent side="right" className="w-[300px] sm:w-[340px] h-screen overflow-y-auto">
+          <SheetContent side="right" className="w-[280px] sm:w-[320px] h-screen overflow-y-auto">
             <SheetHeader>
               <SheetTitle>Muelle {dockPanel.dock}</SheetTitle>
             </SheetHeader>
@@ -632,11 +637,11 @@ export default function MecoDockManager() {
                     </div>
                     <div className="flex items-center justify-between">
                       <div className="text-sm text-muted-foreground">Matrícula</div>
-                      <div className="font-medium truncate max-w-[160px]">{r.MATRICULA || "—"}</div>
+                      <div className="font-medium truncate max-w-[150px]">{r.MATRICULA || "—"}</div>
                     </div>
                     <div className="flex items-center justify-between">
                       <div className="text-sm text-muted-foreground">Destino</div>
-                      <div className="font-medium truncate max-w-[160px]">{r.DESTINO || "—"}</div>
+                      <div className="font-medium truncate max-w-[150px]">{r.DESTINO || "—"}</div>
                     </div>
                     <div className="flex items-center justify-between">
                       <div className="text-sm text-muted-foreground">Estado</div>
@@ -712,7 +717,7 @@ export default function MecoDockManager() {
           </SheetContent>
         </Sheet>
 
-        <footer className="mt-4 text-xs text-muted-foreground flex flex-col sm:flex-row gap-2 sm:items-center sm:justify-between">
+        <footer className="mt-4 text-xs text-muted-foreground flex items-center justify-between">
           <div>Estados camión: <Badge className="bg-emerald-600">OK</Badge> · <Badge className="bg-amber-500">CARGANDO</Badge> · <Badge className="bg-red-600">ANULADO</Badge></div>
           <div>© {new Date().getFullYear()} PLMECO · Plataforma Logística Meco (Inditex)</div>
         </footer>
@@ -753,12 +758,14 @@ function ToolbarX({
       </Button>
       <div className="ml-auto flex items-center gap-2">
         <span className="text-sm text-muted-foreground">Filtrar estado</span>
-        <SelectNative
+        <select
+          className="h-8 w-[160px] border rounded px-2 bg-white text-sm"
           value={filterEstado === "TODOS" ? "" : filterEstado}
-          onChange={(v) => setFilterEstado(v || "TODOS")}
-          options={CAMION_ESTADOS}
-          className="w-[160px]"
-        />
+          onChange={(e)=> setFilterEstado(e.target.value || "TODOS")}
+        >
+          <option value="">Todos</option>
+          {CAMION_ESTADOS.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+        </select>
       </div>
     </div>
   );
