@@ -13,9 +13,12 @@ import * as XLSX from "xlsx";
 import { motion } from "framer-motion";
 
 /**
- * PLMECO – Gestión de Muelles (WEB) – JS
- * Importador: autodetecta hoja y fila de cabecera, muestra diagnóstico y aplica varios
- * métodos de parseo si el principal no devuelve datos.
+ * PLMECO – Gestión de Muelles (WEB) – Import XLSX robusto (cabecera con merges, saltos de línea, etc.)
+ * - Autodetección de fila cabecera y hoja.
+ * - Relleno de cabeceras combinadas (!merges).
+ * - Limpieza de saltos de línea y espacios.
+ * - Alias de cabeceras y validación de muelles.
+ * - Panel de diagnóstico para ver qué se importó.
  */
 
 // --------------------------- Utilidades generales ---------------------------
@@ -48,17 +51,21 @@ const HEADER_ALIASES = {
   "matricula":     "MATRICULA",
   "matrícula":     "MATRICULA",
   "placa":         "MATRICULA",
+  "matricula vehiculo": "MATRICULA",
+  "matricula vehículo": "MATRICULA",
   "destino":       "DESTINO",
   "llegada":       "LLEGADA",
+  "hora llegada":  "LLEGADA",
   "entrada":       "LLEGADA",
   "salida":        "SALIDA",
+  "hora salida":   "SALIDA",
   "salida tope":   "SALIDA TOPE",
   "cierre":        "SALIDA TOPE",
   "observaciones": "OBSERVACIONES",
+  "comentarios":   "OBSERVACIONES",
   // Extras vistos en excels reales
   "ok":            "ESTADO",
   "fuera":         "PRECINTO",
-  "comentarios":   "OBSERVACIONES",
 };
 
 const BASE_HEADERS = [
@@ -80,9 +87,16 @@ const EXTRA_HEADERS = [
 ];
 const ALL_HEADERS = [...BASE_HEADERS, ...EXTRA_HEADERS];
 
+const EXPECTED_KEYS = [
+  ...ALL_HEADERS
+];
+
+// Normaliza nombres (minúsculas + sin tildes) y limpia saltos de línea/espacios
 function norm(s) {
   return (s ?? "")
     .toString()
+    .replace(/\r?\n+/g, " ")
+    .replace(/\s{2,}/g, " ")
     .toLowerCase()
     .normalize("NFD")
     .replace(/\p{Diacritic}/gu, "")
@@ -90,7 +104,7 @@ function norm(s) {
 }
 function mapHeader(name) {
   const n = norm(name);
-  return HEADER_ALIASES[n] || (name ?? "").toString().toUpperCase();
+  return HEADER_ALIASES[n] || (name ?? "").toString().toUpperCase().trim();
 }
 function nowISO() {
   const d = new Date();
@@ -100,6 +114,11 @@ function nowISO() {
   } catch {
     return d.toLocaleString();
   }
+}
+function coerceCell(v) {
+  if (v == null) return "";
+  if (v instanceof Date) return v.toISOString();
+  return String(v).replace(/\r?\n+/g, " ").replace(/\s{2,}/g, " ").trim();
 }
 
 // ---------------------------- Persistencia local ----------------------------
@@ -228,68 +247,74 @@ function Header({ title }) {
   );
 }
 
-// ------------------------------ Importador XLSX -----------------------------
-const EXPECTED_KEYS = [
-  "TRANSPORTISTA","MATRICULA","DESTINO","LLEGADA","SALIDA","SALIDA TOPE","OBSERVACIONES",
-  "MUELLE","PRECINTO","LLEGADA REAL","SALIDA REAL","INCIDENCIAS","ESTADO"
-];
-
-function coerceCell(v) {
-  if (v == null) return "";
-  // Si es fecha de Excel (número), XLSX normalmente ya lo devuelve formateado con raw:false.
-  // Aseguramos string “limpio”:
-  if (v instanceof Date) return v.toISOString();
-  return String(v).trim();
+// ------------------------------ Importador XLSX robusto ---------------------
+function expandHeaderMerges(ws, headerRowIdx) {
+  // Si la hoja tiene merges, propagamos el texto de la celda de origen a todo el rango
+  const merges = ws["!merges"] || [];
+  merges.forEach((m) => {
+    // Solo nos importa si el merge toca la fila de cabecera
+    if (m.s.r <= headerRowIdx && m.e.r >= headerRowIdx) {
+      const srcCellAddr = XLSX.utils.encode_cell({ r: m.s.r, c: m.s.c });
+      const srcCell = ws[srcCellAddr];
+      if (!srcCell || !srcCell.v) return;
+      const text = coerceCell(srcCell.v);
+      for (let c = m.s.c; c <= m.e.c; c++) {
+        const addr = XLSX.utils.encode_cell({ r: headerRowIdx, c });
+        const cell = ws[addr] || (ws[addr] = {});
+        cell.v = text;
+        cell.t = "s";
+      }
+    }
+  });
 }
 
 function tryParseSheet(ws, sheetName) {
-  // 1) Leer como matriz para inspección
+  // Primero, scan como matriz para detectar cabecera
   const rows2D = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
 
-  // 2) Buscar la fila que más coincide con nuestras cabeceras
-  const HEADER_ALIASES_EXTRA = { ...HEADER_ALIASES,
-    "matricula vehiculo": "MATRICULA",
-    "matricula vehículo": "MATRICULA",
-    "hora llegada": "LLEGADA",
-    "hora salida": "SALIDA",
-  };
-  const mapHeaderLoose = (name) => {
-    const n = norm(name);
-    return HEADER_ALIASES_EXTRA[n] || (name ?? "").toString().toUpperCase();
-  };
-
-  let headerRowIdx = -1, bestScore = -1;
-  const scanLimit = Math.min(rows2D.length, 30);
-  for (let r = 0; r < scanLimit; r++) {
-    const mapped = (rows2D[r] || []).map(mapHeaderLoose);
+  // Map header candidates y escoger la mejor fila
+  let headerRowIdx = -1, bestScore = -1, bestIdxLimit = Math.min(rows2D.length, 40);
+  for (let r = 0; r < bestIdxLimit; r++) {
+    const mapped = (rows2D[r] || []).map((h) => mapHeader(h));
     const score = mapped.reduce((acc, h) => acc + (EXPECTED_KEYS.includes(h) ? 1 : 0), 0);
     if (score > bestScore) { bestScore = score; headerRowIdx = r; }
   }
   if (headerRowIdx < 0) headerRowIdx = 0;
 
-  const rawHeaders = (rows2D[headerRowIdx] || []).map((h) => (h ?? "").toString());
-  const headers = rawHeaders.map(mapHeaderLoose);
+  // Propagar merges en la fila cabecera para que sheet_to_json coja textos correctos
+  expandHeaderMerges(ws, headerRowIdx);
 
-  // 3) Construir objetos desde la fila siguiente
-  const dataRows = rows2D.slice(headerRowIdx + 1);
-  const out = [];
+  // Ajustar !ref para que empiece en la fila de cabecera
+  let ws2 = ws;
+  if (ws["!ref"]) {
+    const range = XLSX.utils.decode_range(ws["!ref"]);
+    range.s.r = headerRowIdx;
+    ws2 = { ...ws, "!ref": XLSX.utils.encode_range(range) };
+  }
 
-  for (const arr of dataRows) {
+  // Ahora a JSON por filas, usando esa cabecera
+  const json = XLSX.utils.sheet_to_json(ws2, { defval: "", raw: false });
+  const rows = [];
+  const seenHeaders = new Set();
+
+  // Construir filas normalizadas
+  json.forEach((row) => {
     const obj = {};
-    for (let c = 0; c < headers.length; c++) {
-      const key = headers[c];
-      if (!key) continue;
-      obj[key] = coerceCell(arr?.[c] ?? "");
-    }
-    // Rellenar claves esperadas
+    Object.keys(row).forEach((kRaw) => {
+      const k = mapHeader(kRaw);
+      seenHeaders.add(k);
+      obj[k] = coerceCell(row[kRaw]);
+    });
+
+    // Rellenar claves esperadas ausentes
     for (const h of EXPECTED_KEYS) if (!(h in obj)) obj[h] = "";
 
-    // Filtrar filas totalmente vacías (en columnas clave)
+    // Filtrar filas totalmente vacías en columnas clave
     const keysMin = ["TRANSPORTISTA","MATRICULA","DESTINO","LLEGADA","SALIDA","OBSERVACIONES"];
     const allEmpty = keysMin.every(k => String(obj[k] || "").trim() === "");
-    if (allEmpty) continue;
+    if (allEmpty) return;
 
-    // Normalizar MUELLE si viene
+    // Validar muelle
     if (obj["MUELLE"] !== "") {
       const num = Number(String(obj["MUELLE"]).trim());
       obj["MUELLE"] = Number.isFinite(num) && DOCKS.includes(num) ? num : "";
@@ -297,16 +322,15 @@ function tryParseSheet(ws, sheetName) {
     // Estado por defecto
     if (!obj["ESTADO"]) obj["ESTADO"] = "OK";
 
-    out.push({ id: crypto.randomUUID(), ...obj });
-  }
+    rows.push({ id: crypto.randomUUID(), ...obj });
+  });
 
   return {
     sheetName,
     headerRowIdx,
-    headers,
     bestScore,
-    rows: out,
-    totalRows2D: rows2D.length,
+    headers: Array.from(seenHeaders),
+    rows
   };
 }
 
@@ -319,6 +343,8 @@ export default function MecoDockManager() {
   const [filterEstado, setFilterEstado] = useState("TODOS");
   const [clock, setClock] = useState(nowISO());
   const [dockPanel, setDockPanel] = useState({ open: false, dock: undefined, info: undefined });
+
+  // Diagnóstico
   const [debugOpen, setDebugOpen] = useState(false);
   const [importInfo, setImportInfo] = useState(null);
 
@@ -354,7 +380,7 @@ export default function MecoDockManager() {
     setApp((prev) => ({ ...prev, lados: { ...prev.lados, [lado]: { ...prev.lados[lado], rows: [] } } }));
   }
 
-  // -------- Importar Excel: recorre TODAS las hojas y elige la de mejor score --------
+  // -------- Importar Excel: recorre TODAS las hojas y elige la mejor --------
   function importExcel(file, lado) {
     const reader = new FileReader();
     reader.onload = (e) => {
@@ -366,47 +392,32 @@ export default function MecoDockManager() {
         for (const name of wb.SheetNames) {
           const ws = wb.Sheets[name];
           if (!ws) continue;
-
-          // Intento principal
-          let parsed = tryParseSheet(ws, name);
-
-          // Fallback: si no hay filas, intentamos con range ajustado a cabecera y sheet_to_json estándar
-          if (!parsed.rows.length && ws["!ref"]) {
-            try {
-              const range = XLSX.utils.decode_range(ws["!ref"]);
-              range.s.r = parsed.headerRowIdx; // empezar en fila cabecera
-              const adjRef = XLSX.utils.encode_range(range);
-              const ws2 = { ...ws, "!ref": adjRef };
-              const json2 = XLSX.utils.sheet_to_json(ws2, { defval: "", raw: false });
-              // mapear cabeceras sueltas:
-              const rows2 = json2.map((row) => {
-                const obj = {};
-                Object.keys(row).forEach((k) => { obj[mapHeader(k)] = coerceCell(row[k]); });
-                for (const h of EXPECTED_KEYS) if (!(h in obj)) obj[h] = "";
-                const empty = ["TRANSPORTISTA","MATRICULA","DESTINO","LLEGADA","SALIDA","OBSERVACIONES"]
-                  .every(k => String(obj[k] || "").trim() === "");
-                if (empty) return null;
-                if (obj["MUELLE"] !== "") {
-                  const num = Number(String(obj["MUELLE"]).trim());
-                  obj["MUELLE"] = Number.isFinite(num) && DOCKS.includes(num) ? num : "";
-                }
-                if (!obj["ESTADO"]) obj["ESTADO"] = "OK";
-                return { id: crypto.randomUUID(), ...obj };
-              }).filter(Boolean);
-              parsed = { ...parsed, rows: rows2 };
-            } catch {}
-          }
-
+          const parsed = tryParseSheet(ws, name);
           results.push(parsed);
         }
 
-        // Elegimos la hoja con más filas útiles
-        results.sort((a, b) => b.rows.length - a.rows.length);
+        // Elegimos la hoja con más filas útiles (si empate, la que tenga mayor score de cabecera)
+        results.sort((a, b) => {
+          if (b.rows.length !== a.rows.length) return b.rows.length - a.rows.length;
+          return b.bestScore - a.bestScore;
+        });
         const best = results[0] || null;
 
         setImportInfo({
-          sheetsTried: results.map(r => ({ sheet: r.sheetName, headerRowIdx: r.headerRowIdx, bestScore: r.bestScore, headers: r.headers, rows: r.rows.length })),
-          chosen: best ? { sheet: best.sheetName, headerRowIdx: best.headerRowIdx, bestScore: best.bestScore, headers: best.headers, rows: best.rows.length } : null,
+          sheetsTried: results.map(r => ({
+            sheet: r.sheetName,
+            headerRowIdx: r.headerRowIdx,
+            bestScore: r.bestScore,
+            headers: r.headers,
+            rows: r.rows.length
+          })),
+          chosen: best ? {
+            sheet: best.sheetName,
+            headerRowIdx: best.headerRowIdx,
+            bestScore: best.bestScore,
+            headers: best.headers,
+            rows: best.rows.length
+          } : null,
         });
 
         const rows = best?.rows ?? [];
