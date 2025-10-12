@@ -14,7 +14,7 @@ import { motion } from "framer-motion";
 
 /**
  * PLMECO – Gestión de Muelles (WEB) – JS
- * - Importa .xlsx con cabecera en la FILA 3 (1-index).
+ * - Importa .xlsx con cabecera AUTODETECTADA (no asume fila 3).
  * - Columnas base: Transportista, Matrícula, Destino, Llegada, Salida, Salida Tope, Observaciones.
  * - Extras editables: Muelle, Precinto, Llegada Real, Salida Real, Incidencias, Estado.
  * - 10 pestañas (Lado 0..9), vista de muelles (Verde/Amarillo/Rojo).
@@ -60,7 +60,7 @@ const HEADER_ALIASES = {
   "salida tope":   "SALIDA TOPE",
   "cierre":        "SALIDA TOPE",
   "observaciones": "OBSERVACIONES",
-  // Extras detectados en ejemplos
+  // Extras vistos en tus excels
   "ok":            "ESTADO",
   "fuera":         "PRECINTO",
 };
@@ -281,7 +281,7 @@ function Toolbar({
   );
 }
 
-// ---------------------- Importar Excel (encabezados en FILA 3) --------------
+// ---------------------- Importar Excel (AUTODETECT CABECERA) ----------------
 function importExcel(file, lado) {
   const reader = new FileReader();
 
@@ -289,48 +289,89 @@ function importExcel(file, lado) {
     const data = new Uint8Array(e.target.result);
     const wb = XLSX.read(data, { type: "array" });
     const ws = wb.Sheets[wb.SheetNames[0]];
+    if (!ws) return;
 
-    // Usar FILA 3 como cabecera (1-index) → índice 2 (0-index)
-    if (ws && ws["!ref"]) {
-      const range = XLSX.utils.decode_range(ws["!ref"]);
-      range.s.r = 2; // cabecera en fila 3
-      ws["!ref"] = XLSX.utils.encode_range(range);
+    // 1) Leemos como MATRIZ (header:1) para inspeccionar filas sin suponer cuál es la cabecera
+    const rows2D = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
+
+    // 2) Autodetectar la fila de cabecera buscando la que más encaje con estas claves
+    const EXPECTED_KEYS = [
+      "TRANSPORTISTA","MATRICULA","DESTINO","LLEGADA","SALIDA","SALIDA TOPE","OBSERVACIONES",
+      "MUELLE","PRECINTO","LLEGADA REAL","SALIDA REAL","INCIDENCIAS","ESTADO"
+    ];
+
+    // Normalizador y alias “sueltos”
+    function norm2(s) {
+      return (s || "").toString().toLowerCase().normalize("NFD").replace(/\p{Diacritic}/gu, "").trim();
+    }
+    const HEADER_ALIASES_EXTRA = {
+      ...HEADER_ALIASES,
+      // por si hay más variantes
+      "matricula vehiculo": "MATRICULA",
+      "matricula vehículo": "MATRICULA",
+      "hora llegada": "LLEGADA",
+      "hora salida": "SALIDA",
+    };
+    function mapHeaderLoose(name) {
+      const n = norm2(name);
+      return HEADER_ALIASES_EXTRA[n] || (name || "").toString().toUpperCase();
     }
 
-    // Pasar a JSON usando esa fila como headers
-    const json = XLSX.utils.sheet_to_json(ws, {
-      defval: "",   // no perder celdas vacías
-      raw: false    // formatea a texto legible (p. ej. horas)
-    });
+    let headerRowIdx = -1;
+    let bestScore = -1;
+    const scanLimit = Math.min(rows2D.length, 12); // miramos primeras 12 filas
+    for (let r = 0; r < scanLimit; r++) {
+      const row = rows2D[r] || [];
+      const mapped = row.map(mapHeaderLoose);
+      const score = mapped.reduce((acc, h) => acc + (EXPECTED_KEYS.includes(h) ? 1 : 0), 0);
+      if (score > bestScore) { bestScore = score; headerRowIdx = r; }
+    }
+    if (headerRowIdx < 0) headerRowIdx = 0;
 
-    // Construir filas normalizadas
-    const rows = json.map((row) => {
-      const mapped = {};
-      Object.keys(row).forEach((k) => {
-        const mk = mapHeader(String(k || "").trim());
-        mapped[mk] = row[k];
-      });
+    const rawHeaders = (rows2D[headerRowIdx] || []).map((h) => (h ?? "").toString());
+    const headers = rawHeaders.map(mapHeaderLoose);
 
-      // Asegurar todas las columnas esperadas
-      ALL_HEADERS.forEach((h) => { if (!(h in mapped)) mapped[h] = ""; });
+    // 3) Construimos objetos a partir de la fila siguiente a la cabecera
+    const dataRows = rows2D.slice(headerRowIdx + 1);
 
-      // Normalizar muelle si viene
-      if (mapped["MUELLE"]) {
-        const num = Number(String(mapped["MUELLE"]).trim());
-        mapped["MUELLE"] = Number.isFinite(num) && DOCKS.includes(num) ? num : "";
+    const rows = [];
+    for (const arr of dataRows) {
+      const obj = {};
+      for (let c = 0; c < headers.length; c++) {
+        const key = headers[c];
+        if (!key) continue;
+        obj[key] = (arr && arr[c] != null) ? arr[c] : "";
       }
 
-      // Estado por defecto si no viene
-      if (!mapped["ESTADO"]) mapped["ESTADO"] = "OK";
+      // Asegurar todas las columnas esperadas
+      for (const h of EXPECTED_KEYS) if (!(h in obj)) obj[h] = "";
 
-      return { id: crypto.randomUUID(), ...mapped };
-    });
+      // Filtrar filas totalmente vacías (en columnas clave)
+      const keyFields = ["TRANSPORTISTA","MATRICULA","DESTINO","LLEGADA","SALIDA","OBSERVACIONES"];
+      const allEmpty = keyFields.every(k => String(obj[k] || "").trim() === "");
+      if (allEmpty) continue;
 
-    // Guardar en el lado seleccionado
+      // Normalizar MUELLE si viene
+      if (obj["MUELLE"] !== "") {
+        const num = Number(String(obj["MUELLE"]).trim());
+        obj["MUELLE"] = Number.isFinite(num) && DOCKS.includes(num) ? num : "";
+      }
+
+      // Estado por defecto
+      if (!obj["ESTADO"]) obj["ESTADO"] = "OK";
+
+      rows.push({ id: crypto.randomUUID(), ...obj });
+    }
+
+    // 4) Persistir en el lado elegido
     setApp((prev) => ({
       ...prev,
       lados: { ...prev.lados, [lado]: { ...prev.lados[lado], rows } },
     }));
+
+    if (!rows.length) {
+      alert("No se han detectado filas con datos tras la cabecera. Revisa que el Excel tenga contenido debajo de la fila de cabeceras.");
+    }
   };
 
   reader.readAsArrayBuffer(file);
