@@ -4,7 +4,6 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
-import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Download, FileUp, Plus, Trash2, X } from "lucide-react";
 import * as XLSX from "xlsx";
@@ -12,10 +11,9 @@ import { motion } from "framer-motion";
 
 /**
  * PLMECO – Gestión de Muelles (WEB)
- * Cambios clave en esta versión:
- * - Selects de ESTADO e INCIDENCIAS con <select> nativo y control mínimo (siempre reflejan valor).
- * - Layout de 2 columnas con derecha estrecha (290px) y muelles más verticales.
- * - Tabla alta (84vh), header sticky, auto-ancho por contenido.
+ * - Drawer lateral propio (sin Sheet) => inputs/selects internos interactúan bien.
+ * - Selects nativos en tabla y panel.
+ * - Columna de muelles estrecha y vertical; tabla alta con header sticky.
  */
 
 // --------------------------- Constantes generales ---------------------------
@@ -110,7 +108,7 @@ function coerceCell(v) {
 
 // Autoancho por contenido (ancho en "ch")
 function widthFromLen(len) {
-  const ch = Math.min(Math.max(len * 0.7 + 3, 10), 46); // 10–46ch
+  const ch = Math.min(Math.max(len * 0.7 + 3, 10), 46);
   return `${Math.round(ch)}ch`;
 }
 function computeColumnTemplate(rows) {
@@ -121,7 +119,7 @@ function computeColumnTemplate(rows) {
     );
     return widthFromLen(maxLen);
   });
-  return `${widths.join(" ")} 8rem`; // última es Acciones (8rem)
+  return `${widths.join(" ")} 8rem`; // última = Acciones
 }
 
 // ---------------------------- Persistencia local ----------------------------
@@ -437,10 +435,9 @@ export default function MecoDockManager() {
           </div>
         </header>
 
-        <div className="grid gap-3"
-             style={{ gridTemplateColumns: "minmax(0,1fr) 290px" }}>
+        <div className="grid gap-3" style={{ gridTemplateColumns: "minmax(0,1fr) 290px" }}>
           {/* Columna izquierda: pestañas + tabla */}
-          <Card className="">
+          <Card>
             <CardHeader className="pb-2">
               <div className="flex items-center justify-between">
                 <CardTitle>Operativas por lado</CardTitle>
@@ -586,7 +583,6 @@ export default function MecoDockManager() {
               {legend}
             </CardHeader>
             <CardContent className="max-h-[84vh] overflow-auto">
-              {/* 2 columnas en móviles, 3 a partir de 380px aprox. */}
               <div className="grid grid-cols-2 xs:grid-cols-3 gap-2">
                 {DOCKS.map((d) => {
                   const info = docks.get(d) || { state: "LIBRE" };
@@ -617,105 +613,124 @@ export default function MecoDockManager() {
           </Card>
         </div>
 
-        {/* Panel lateral info de muelle – estrecho y alto completo */}
-        <Sheet open={dockPanel.open} onOpenChange={(o) => setDockPanel((p) => ({ ...p, open: o }))}>
-          <SheetContent side="right" className="w-[280px] sm:w-[320px] h-screen overflow-y-auto">
-            <SheetHeader>
-              <SheetTitle>Muelle {dockPanel.dock}</SheetTitle>
-            </SheetHeader>
-            <div className="mt-4 space-y-3 pb-6">
-              {(() => {
-                const info = dockPanel.info;
-                if (!info || !dockPanel.dock) return <div className="text-muted-foreground">Sin información.</div>;
-                if (!info.row) return <div className="text-emerald-600 font-medium">Muelle libre</div>;
-                const r = info.row;
-                return (
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <div className="text-sm text-muted-foreground">Lado</div>
-                      <div className="font-medium">{info.lado}</div>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <div className="text-sm text-muted-foreground">Matrícula</div>
-                      <div className="font-medium truncate max-w-[150px]">{r.MATRICULA || "—"}</div>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <div className="text-sm text-muted-foreground">Destino</div>
-                      <div className="font-medium truncate max-w-[150px]">{r.DESTINO || "—"}</div>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <div className="text-sm text-muted-foreground">Estado</div>
-                      <Badge className={`${estadoBadgeColor(r.ESTADO)} text-white`}>{r.ESTADO || "OK"}</Badge>
-                    </div>
-                    <div className="grid grid-cols-2 gap-2 pt-2">
-                      <div>
-                        <Header title="Llegada real" />
+        {/* Drawer lateral propio (sustituye al Sheet) */}
+        {dockPanel.open && (
+          <>
+            {/* Fondo */}
+            <div
+              className="fixed inset-0 bg-black/30 z-[60]"
+              onClick={() => setDockPanel({ open: false, dock: undefined, info: undefined })}
+            />
+            {/* Panel */}
+            <div className="fixed right-0 top-0 h-screen w-[280px] sm:w-[320px] bg-white z-[70] shadow-2xl border-l">
+              <div className="flex items-center justify-between px-4 py-3 border-b">
+                <div className="font-semibold">Muelle {dockPanel.dock}</div>
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  onClick={() => setDockPanel({ open: false, dock: undefined, info: undefined })}
+                >
+                  <X className="w-5 h-5" />
+                </Button>
+              </div>
+              <div className="p-4 space-y-3 overflow-y-auto h-[calc(100vh-56px)]">
+                {(() => {
+                  const info = dockPanel.info;
+                  if (!info || !dockPanel.dock) return <div className="text-muted-foreground">Sin información.</div>;
+                  if (!info.row) return <div className="text-emerald-600 font-medium">Muelle libre</div>;
+                  const r = info.row;
+                  return (
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <div className="text-sm text-muted-foreground">Lado</div>
+                        <div className="font-medium">{info.lado}</div>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <div className="text-sm text-muted-foreground">Matrícula</div>
+                        <div className="font-medium truncate max-w-[150px]">{r.MATRICULA || "—"}</div>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <div className="text-sm text-muted-foreground">Destino</div>
+                        <div className="font-medium truncate max-w-[150px]">{r.DESTINO || "—"}</div>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <div className="text-sm text-muted-foreground">Estado</div>
+                        <Badge className={`${estadoBadgeColor(r.ESTADO)} text-white`}>{r.ESTADO || "OK"}</Badge>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2 pt-2">
+                        <div>
+                          <Header title="Llegada real" />
+                          <Input
+                            value={(r["LLEGADA REAL"] ?? "").toString()}
+                            onChange={(e) => updateRow(info.lado, r.id, { "LLEGADA REAL": e.target.value })}
+                            placeholder="hh:mm / ISO"
+                          />
+                        </div>
+                        <div>
+                          <Header title="Salida real" />
+                          <Input
+                            value={(r["SALIDA REAL"] ?? "").toString()}
+                            onChange={(e) => updateRow(info.lado, r.id, { "SALIDA REAL": e.target.value })}
+                            placeholder="hh:mm / ISO"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <Header title="Muelle" />
+                          <Input
+                            value={(r["MUELLE"] ?? "").toString()}
+                            onChange={(e) => updateRow(info.lado, r.id, { MUELLE: e.target.value })}
+                            placeholder="nº muelle"
+                          />
+                          <div className="text-[10px] text-muted-foreground mt-0.5">* Se valida en la parrilla</div>
+                        </div>
+                        <div>
+                          <Header title="Precinto" />
+                          <Input
+                            value={(r["PRECINTO"] ?? "").toString()}
+                            onChange={(e) => updateRow(info.lado, r.id, { "PRECINTO": e.target.value })}
+                            placeholder="Precinto"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <Header title="Incidencias" />
+                          <SelectNative
+                            value={r["INCIDENCIAS"]}
+                            onChange={(v) => updateRow(info.lado, r.id, { "INCIDENCIAS": v })}
+                            options={INCIDENTES}
+                          />
+                        </div>
+                        <div>
+                          <Header title="Estado" />
+                          <SelectNative
+                            value={r["ESTADO"]}
+                            onChange={(v) => updateRow(info.lado, r.id, { "ESTADO": v })}
+                            options={CAMION_ESTADOS}
+                          />
+                        </div>
+                      </div>
+
+                      <div className="pt-2">
+                        <Header title="Observaciones" />
                         <Input
-                          value={(r["LLEGADA REAL"] ?? "").toString()}
-                          onChange={(e) => updateRow(info.lado, r.id, { "LLEGADA REAL": e.target.value })}
-                          placeholder="hh:mm / ISO"
-                        />
-                      </div>
-                      <div>
-                        <Header title="Salida real" />
-                        <Input
-                          value={(r["SALIDA REAL"] ?? "").toString()}
-                          onChange={(e) => updateRow(info.lado, r.id, { "SALIDA REAL": e.target.value })}
-                          placeholder="hh:mm / ISO"
+                          value={(r.OBSERVACIONES ?? "").toString()}
+                          onChange={(e) => updateRow(info.lado, r.id, { OBSERVACIONES: e.target.value })}
+                          placeholder="Añade notas"
                         />
                       </div>
                     </div>
-                    <div className="grid grid-cols-2 gap-2">
-                      <div>
-                        <Header title="Muelle" />
-                        <Input
-                          value={(r["MUELLE"] ?? "").toString()}
-                          onChange={(e) => updateRow(info.lado, r.id, { MUELLE: e.target.value })}
-                          placeholder="nº muelle"
-                        />
-                        <div className="text-[10px] text-muted-foreground mt-0.5">* Se valida en la parrilla</div>
-                      </div>
-                      <div>
-                        <Header title="Precinto" />
-                        <Input
-                          value={(r["PRECINTO"] ?? "").toString()}
-                          onChange={(e) => updateRow(info.lado, r.id, { "PRECINTO": e.target.value })}
-                          placeholder="Precinto"
-                        />
-                      </div>
-                    </div>
-                    <div className="grid grid-cols-2 gap-2">
-                      <div>
-                        <Header title="Incidencias" />
-                        <SelectNative
-                          value={r["INCIDENCIAS"]}
-                          onChange={(v) => updateRow(info.lado, r.id, { "INCIDENCIAS": v })}
-                          options={INCIDENTES}
-                        />
-                      </div>
-                      <div>
-                        <Header title="Estado" />
-                        <SelectNative
-                          value={r["ESTADO"]}
-                          onChange={(v) => updateRow(info.lado, r.id, { "ESTADO": v })}
-                          options={CAMION_ESTADOS}
-                        />
-                      </div>
-                    </div>
-                    <div className="pt-2">
-                      <Header title="Observaciones" />
-                      <Input
-                        value={(r.OBSERVACIONES ?? "").toString()}
-                        onChange={(e) => updateRow(info.lado, r.id, { OBSERVACIONES: e.target.value })}
-                        placeholder="Añade notas"
-                      />
-                    </div>
-                  </div>
-                );
-              })()}
+                  );
+                })()}
+              </div>
             </div>
-          </SheetContent>
-        </Sheet>
+          </>
+        )}
 
         <footer className="mt-4 text-xs text-muted-foreground flex items-center justify-between">
           <div>Estados camión: <Badge className="bg-emerald-600">OK</Badge> · <Badge className="bg-amber-500">CARGANDO</Badge> · <Badge className="bg-red-600">ANULADO</Badge></div>
