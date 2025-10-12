@@ -6,7 +6,6 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Download, FileUp, Plus, Trash2, X } from "lucide-react";
 import * as XLSX from "xlsx";
@@ -15,9 +14,9 @@ import { motion } from "framer-motion";
 /**
  * PLMECO – Gestión de Muelles (WEB)
  * - Importador XLSX robusto (autodetecta cabecera, soporta merges, limpia saltos).
+ * - Todas las celdas importadas son editables (ESTADO/INCIDENCIAS select; MUELLE validado).
+ * - Header fijo y sincronizado (un solo contenedor scroll vertical+horizontal).
  * - PRECINTO visible y editable.
- * - Todas las celdas importadas editables (ESTADO/INCIDENCIAS como select; MUELLE validado).
- * - Autoajuste de ancho por contenido (según texto más largo de cada columna).
  */
 
 // --------------------------- Constantes generales ---------------------------
@@ -80,7 +79,7 @@ const HEADER_ALIASES = {
   "cierre": "SALIDA TOPE",
   "observaciones": "OBSERVACIONES",
   "comentarios": "OBSERVACIONES",
-  // extras que hemos visto
+  // extras vistos
   "ok": "ESTADO",
   "fuera": "PRECINTO",
 };
@@ -117,8 +116,7 @@ function coerceCell(v) {
 
 // Autoajuste de ancho por contenido (ancho en "ch")
 function widthFromLen(len) {
-  // mínimo 10ch, máximo 40ch; 0.7ch por carácter + 3ch margen
-  const ch = Math.min(Math.max(len * 0.7 + 3, 10), 40);
+  const ch = Math.min(Math.max(len * 0.7 + 3, 10), 46); // 10–46ch
   return `${Math.round(ch)}ch`;
 }
 function computeColumnTemplate(rows) {
@@ -229,7 +227,7 @@ function estadoBadgeColor(estado) {
 function EditableCell({ value, onChange, type = "text", className = "", options }) {
   if (type === "select" && options) {
     return (
-      <Select value={value ?? ""} onValueChange={onChange}>
+      <Select value={(value ?? "").toString()} onValueChange={onChange}>
         <SelectTrigger className={`h-8 ${className}`}>
           <SelectValue placeholder="Seleccionar" />
         </SelectTrigger>
@@ -243,7 +241,7 @@ function EditableCell({ value, onChange, type = "text", className = "", options 
   }
   return (
     <Input
-      value={value ?? ""}
+      value={(value ?? "").toString()}
       onChange={(e) => onChange(e.target.value)}
       className={`h-8 ${className}`}
       type={type === "number" ? "number" : "text"}
@@ -261,7 +259,6 @@ function Header({ title }) {
 
 // ------------------------------ Importador XLSX -----------------------------
 function expandHeaderMerges(ws, headerRowIdx) {
-  // Propagar texto de celdas combinadas (merges) sobre la fila de cabecera
   const merges = ws["!merges"] || [];
   merges.forEach((m) => {
     if (m.s.r <= headerRowIdx && m.e.r >= headerRowIdx) {
@@ -508,6 +505,7 @@ export default function MecoDockManager() {
                     <TabsTrigger key={n} value={n} className="px-3">{n}</TabsTrigger>
                   ))}
                 </TabsList>
+
                 <div className="mt-3">
                   <ToolbarX
                     onImport={(f) => importExcel(f, active)}
@@ -519,77 +517,80 @@ export default function MecoDockManager() {
                   />
                 </div>
 
-                {LADOS.map((n) => (
-                  <TabsContent key={n} value={n} className="mt-4">
-                    <div className="border rounded-xl overflow-hidden">
-                      <div className="overflow-x-auto">
-                        {/* Cabecera autoajustada */}
-                        <div
-                          className="grid bg-slate-200"
-                          style={{ gridTemplateColumns: computeColumnTemplate(app.lados[n].rows) }}
-                        >
-                          {ALL_HEADERS.map((h) => (
-                            <div key={h} className="bg-slate-50 p-2 border-r border-slate-200">
-                              <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">{h}</div>
+                {LADOS.map((n) => {
+                  const rows = app.lados[n].rows;
+                  const gridTemplate = computeColumnTemplate(rows);
+                  return (
+                    <TabsContent key={n} value={n} className="mt-4">
+                      <div className="border rounded-xl overflow-hidden">
+                        {/* Un ÚNICO contenedor con scroll horizontal y vertical sincronizado */}
+                        <div className="overflow-auto max-h-[58vh]">
+                          {/* Header fijo dentro del MISMO contenedor de scroll */}
+                          <div
+                            className="grid bg-slate-200 sticky top-0 z-10"
+                            style={{ gridTemplateColumns: gridTemplate }}
+                          >
+                            {ALL_HEADERS.map((h) => (
+                              <div key={h} className="bg-slate-50 p-2 border-r border-slate-200">
+                                <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">{h}</div>
+                              </div>
+                            ))}
+                            <div className="bg-slate-50 p-2">
+                              <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">Acciones</div>
                             </div>
-                          ))}
-                          <div className="bg-slate-50 p-2">
-                            <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">Acciones</div>
+                          </div>
+
+                          {/* Filas – MISMO contenedor -> header y datos se desplazan juntos */}
+                          <div>
+                            {filteredRows(n).map((row) => (
+                              <div
+                                key={row.id}
+                                className="grid bg-white border-t border-slate-200"
+                                style={{ gridTemplateColumns: gridTemplate }}
+                              >
+                                {ALL_HEADERS.map((h) => {
+                                  const isNumber = h === "MUELLE";
+                                  const isEstado = h === "ESTADO";
+                                  const isInc    = h === "INCIDENCIAS";
+                                  return (
+                                    <div key={h} className="p-1 border-r border-slate-100 flex items-center">
+                                      <EditableCell
+                                        value={row[h]}
+                                        onChange={(v) => {
+                                          if (h === "MUELLE") {
+                                            const val = String(v).trim();
+                                            if (!val) return updateRow(n, row.id, { MUELLE: "" });
+                                            const num = Number(val);
+                                            if (!DOCKS.includes(num)) return;
+                                            return updateRow(n, row.id, { MUELLE: num });
+                                          }
+                                          if (h === "ESTADO")      return updateRow(n, row.id, { ESTADO: v });
+                                          if (h === "INCIDENCIAS") return updateRow(n, row.id, { INCIDENCIAS: v });
+                                          updateRow(n, row.id, { [h]: v }); // resto (incluye PRECINTO) editable
+                                        }}
+                                        type={isNumber ? "number" : (isEstado || isInc) ? "select" : "text"}
+                                        options={
+                                          isEstado ? CAMION_ESTADOS.map((e) => e.key) :
+                                          isInc    ? INCIDENTES : undefined
+                                        }
+                                        className="rounded-none border-0 bg-white"
+                                      />
+                                    </div>
+                                  );
+                                })}
+                                <div className="p-1 flex items-center justify-center">
+                                  <Button size="icon" variant="ghost" onClick={() => removeRow(n, row.id)}>
+                                    <X className="w-4 h-4" />
+                                  </Button>
+                                </div>
+                              </div>
+                            ))}
                           </div>
                         </div>
-
-                        {/* Filas autoajustadas */}
-                        <ScrollArea className="h-[48vh]">
-                          {filteredRows(n).map((row) => (
-                            <div
-                              key={row.id}
-                              className="grid bg-white border-t border-slate-200"
-                              style={{ gridTemplateColumns: computeColumnTemplate(app.lados[n].rows) }}
-                            >
-                              {ALL_HEADERS.map((h) => {
-                                const isNumber = h === "MUELLE";
-                                const isEstado = h === "ESTADO";
-                                const isInc    = h === "INCIDENCIAS";
-                                return (
-                                  <div key={h} className="p-1 border-r border-slate-100 flex items-center">
-                                    <EditableCell
-                                      value={row[h]}
-                                      onChange={(v) => {
-                                        // TODO: todas las columnas son editables; MUELLE validado
-                                        if (h === "MUELLE") {
-                                          const val = String(v).trim();
-                                          if (!val) return updateRow(n, row.id, { MUELLE: "" });
-                                          const num = Number(val);
-                                          if (!DOCKS.includes(num)) return; // evita muelle no permitido
-                                          return updateRow(n, row.id, { MUELLE: num });
-                                        }
-                                        if (h === "ESTADO")      return updateRow(n, row.id, { ESTADO: v });
-                                        if (h === "INCIDENCIAS") return updateRow(n, row.id, { INCIDENCIAS: v });
-                                        // el resto (incluye PRECINTO) editable texto
-                                        updateRow(n, row.id, { [h]: v });
-                                      }}
-                                      type={isNumber ? "number" : isEstado || isInc ? "select" : "text"}
-                                      options={
-                                        isEstado ? CAMION_ESTADOS.map((e) => e.key) :
-                                        isInc    ? INCIDENTES : undefined
-                                      }
-                                      className="rounded-none border-0 bg-white"
-                                    />
-                                  </div>
-                                );
-                              })}
-                              <div className="p-1 flex items-center justify-center">
-                                <Button size="icon" variant="ghost" onClick={() => removeRow(n, row.id)}>
-                                  <X className="w-4 h-4" />
-                                </Button>
-                              </div>
-                            </div>
-                          ))}
-                        </ScrollArea>
                       </div>
-                    </div>
-                  </TabsContent>
-                ))}
+                    </TabsContent>
+                  );
+                })}
               </Tabs>
             </CardContent>
           </Card>
@@ -665,7 +666,7 @@ export default function MecoDockManager() {
                       <div>
                         <Header title="Llegada real" />
                         <Input
-                          value={r["LLEGADA REAL"] || ""}
+                          value={(r["LLEGADA REAL"] ?? "").toString()}
                           onChange={(e) => updateRow(info.lado, r.id, { "LLEGADA REAL": e.target.value })}
                           placeholder="hh:mm / ISO"
                         />
@@ -673,16 +674,66 @@ export default function MecoDockManager() {
                       <div>
                         <Header title="Salida real" />
                         <Input
-                          value={r["SALIDA REAL"] || ""}
+                          value={(r["SALIDA REAL"] ?? "").toString()}
                           onChange={(e) => updateRow(info.lado, r.id, { "SALIDA REAL": e.target.value })}
                           placeholder="hh:mm / ISO"
                         />
                       </div>
                     </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <Header title="Muelle" />
+                        <Input
+                          value={(r["MUELLE"] ?? "").toString()}
+                          onChange={(e) => {
+                            const val = e.target.value.trim();
+                            if (!val) return updateRow(info.lado, r.id, { MUELLE: "" });
+                            const num = Number(val);
+                            if (!DOCKS.includes(num)) return;
+                            updateRow(info.lado, r.id, { MUELLE: num });
+                          }}
+                          placeholder="nº muelle"
+                        />
+                      </div>
+                      <div>
+                        <Header title="Precinto" />
+                        <Input
+                          value={(r["PRECINTO"] ?? "").toString()}
+                          onChange={(e) => updateRow(info.lado, r.id, { "PRECINTO": e.target.value })}
+                          placeholder="Precinto"
+                        />
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <Header title="Incidencias" />
+                        <Select
+                          value={(r["INCIDENCIAS"] ?? "").toString()}
+                          onValueChange={(v) => updateRow(info.lado, r.id, { "INCIDENCIAS": v })}
+                        >
+                          <SelectTrigger className="h-9"><SelectValue placeholder="Seleccionar" /></SelectTrigger>
+                          <SelectContent>
+                            {INCIDENTES.map(opt => <SelectItem key={opt} value={opt}>{opt}</SelectItem>)}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div>
+                        <Header title="Estado" />
+                        <Select
+                          value={(r["ESTADO"] ?? "OK").toString()}
+                          onValueChange={(v) => updateRow(info.lado, r.id, { "ESTADO": v })}
+                        >
+                          <SelectTrigger className="h-9"><SelectValue placeholder="Seleccionar" /></SelectTrigger>
+                          <SelectContent>
+                            {CAMION_ESTADOS.map(opt => <SelectItem key={opt.key} value={opt.key}>{opt.label}</SelectItem>)}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </div>
                     <div className="pt-2">
                       <Header title="Observaciones" />
                       <Input
-                        value={r.OBSERVACIONES || ""}
+                        value={(r.OBSERVACIONES ?? "").toString()}
                         onChange={(e) => updateRow(info.lado, r.id, { OBSERVACIONES: e.target.value })}
                         placeholder="Añade notas"
                       />
