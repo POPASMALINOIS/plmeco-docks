@@ -8,6 +8,14 @@ import { Download, FileUp, Plus, Trash2, X } from "lucide-react";
 import * as XLSX from "xlsx";
 import { motion } from "framer-motion";
 
+/**
+ * PLMECO – Gestión de Muelles (WEB)
+ * Cambios de esta versión:
+ * - Reordenación de columnas en la tabla principal para ver juntas:
+ *   TRANSPORTISTA · DESTINO · MUELLE · PRECINTO · LLEGADA REAL · SALIDA REAL
+ * - Resto de mejoras se mantienen (drawer propio, selects nativos, etc.).
+ */
+
 // --------------------------- Constantes generales ---------------------------
 const DOCKS = [
   312,313,314,315,316,317,318,319,320,321,322,323,324,325,326,327,328,329,330,331,332,333,334,335,336,337,
@@ -24,6 +32,7 @@ const INCIDENTES = [
 ];
 const CAMION_ESTADOS = ["OK", "CARGANDO", "ANULADO"];
 
+// Cabeceras base que pueden venir del Excel
 const BASE_HEADERS = [
   "TRANSPORTISTA",
   "MATRICULA",
@@ -33,6 +42,8 @@ const BASE_HEADERS = [
   "SALIDA TOPE",
   "OBSERVACIONES",
 ];
+
+// Columnas extra propias de la app
 const EXTRA_HEADERS = [
   "MUELLE",
   "PRECINTO",
@@ -41,10 +52,34 @@ const EXTRA_HEADERS = [
   "INCIDENCIAS",
   "ESTADO",
 ];
-const ALL_HEADERS = [...BASE_HEADERS, ...EXTRA_HEADERS];
-const EXPECTED_KEYS = [...ALL_HEADERS];
 
-// --------------------------- Utilidades comunes -----------------------------
+/**
+ * ORDEN VISUAL DE LA TABLA PRINCIPAL
+ * (puedes ajustar fácilmente tocando este array)
+ */
+const ALL_HEADERS = [
+  // Grupo solicitado, juntos al inicio:
+  "TRANSPORTISTA",
+  "DESTINO",
+  "MUELLE",
+  "PRECINTO",
+  "LLEGADA REAL",
+  "SALIDA REAL",
+
+  // Resto de columnas:
+  "MATRICULA",
+  "LLEGADA",
+  "SALIDA",
+  "SALIDA TOPE",
+  "OBSERVACIONES",
+  "INCIDENCIAS",
+  "ESTADO",
+];
+
+// Para parsing/validación esperamos todas:
+const EXPECTED_KEYS = [...new Set([...BASE_HEADERS, ...EXTRA_HEADERS])];
+
+// Alias de cabeceras (normalización)
 function norm(s) {
   return (s ?? "")
     .toString()
@@ -96,7 +131,7 @@ function coerceCell(v) {
   return String(v).replace(/\r?\n+/g, " ").replace(/\s{2,}/g, " ").trim();
 }
 
-// Autoancho por contenido (ancho en "ch"); MATRÍCULA con extra
+// Autoancho por contenido (ancho en "ch"); MATRÍCULA con un plus
 function widthFromLen(len) {
   const ch = Math.min(Math.max(len * 0.7 + 3, 10), 56);
   return `${Math.round(ch)}ch`;
@@ -107,10 +142,10 @@ function computeColumnTemplate(rows) {
       (h || "").length,
       ...rows.map(r => ((r?.[h] ?? "") + "").length)
     );
-    if (h === "MATRICULA") return widthFromLen(maxLen + 6);
+    if (h === "MATRICULA") return widthFromLen(maxLen + 6); // plus para que no se corte
     return widthFromLen(maxLen);
   });
-  return `${widths.join(" ")} 8rem`;
+  return `${widths.join(" ")} 8rem`; // última = Acciones
 }
 
 // ---------------------------- Persistencia local ----------------------------
@@ -194,7 +229,6 @@ export default function MecoDockManager() {
   const [active, setActive] = useState(LADOS[0]);
   const [filterEstado, setFilterEstado] = useState("TODOS");
   const [clock, setClock] = useState(nowISO());
-  // Panel guarda lado + rowId (acceso a fila viva)
   const [dockPanel, setDockPanel] = useState({ open: false, dock: undefined, lado: undefined, rowId: undefined });
   const [debugOpen, setDebugOpen] = useState(false);
   const [importInfo, setImportInfo] = useState(null);
@@ -220,6 +254,7 @@ export default function MecoDockManager() {
     setApp((prev) => ({ ...prev, lados: { ...prev.lados, [lado]: { ...prev.lados[lado], rows: [] } } }));
   }
 
+  // ------------------------------ Importador XLSX ---------------------------
   function importExcel(file, lado) {
     const reader = new FileReader();
     reader.onload = (e) => {
@@ -278,7 +313,8 @@ export default function MecoDockManager() {
         seenHeaders.add(k);
         obj[k] = coerceCell(row[kRaw]);
       });
-      for (const h of ALL_HEADERS) if (!(h in obj)) obj[h] = "";
+      // Aseguramos todas las keys esperadas (aunque no se muestren primero)
+      for (const h of EXPECTED_KEYS) if (!(h in obj)) obj[h] = "";
       const keysMin = ["TRANSPORTISTA","MATRICULA","DESTINO","LLEGADA","SALIDA","OBSERVACIONES"];
       const allEmpty = keysMin.every(k => String(obj[k] || "").trim() === "");
       if (allEmpty) return;
@@ -460,177 +496,11 @@ export default function MecoDockManager() {
           </Card>
 
           {/* Derecha: estrecha (290px) y vertical */}
-          <Card className="w-[290px]">
-            <CardHeader className="pb-2 flex flex-col gap-2">
-              <CardTitle className="text-base">Muelles (tiempo real)</CardTitle>
-              {legend}
-            </CardHeader>
-            <CardContent className="max-h-[84vh] overflow-auto">
-              <div className="grid grid-cols-2 xs:grid-cols-3 gap-2">
-                {DOCKS.map((d) => {
-                  const info = docks.get(d) || { state: "LIBRE" };
-                  const color = dockColor(info.state);
-                  const label = `${d}`;
-                  const tooltip = info.row
-                    ? `${label} • ${info.row.MATRICULA || "?"} • ${info.row.DESTINO || "?"} • ${(info.row.ESTADO || "OK")}`
-                    : `${label} • Libre`;
-
-                  const btn = (
-                    <motion.button
-                      whileTap={{ scale: 0.96 }}
-                      onClick={() => setDockPanel({ open: true, dock: d, lado: info.lado, rowId: info.row?.id })}
-                      className={`h-9 rounded-xl text-white text-sm font-semibold shadow ${color}`}
-                    >
-                      {label}
-                    </motion.button>
-                  );
-                  // Cuando el panel está abierto, no montamos tooltip para evitar portales encima
-                  return dockPanel.open ? (
-                    <div key={d}>{btn}</div>
-                  ) : (
-                    <Tooltip key={d}>
-                      <TooltipTrigger asChild>{btn}</TooltipTrigger>
-                      <TooltipContent><p>{tooltip}</p></TooltipContent>
-                    </Tooltip>
-                  );
-                })}
-              </div>
-            </CardContent>
-          </Card>
+          <DockRight app={app} setDockPanel={setDockPanel} dockPanel={dockPanel} />
         </div>
 
-        {/* Overlay + Drawer con z-index máximo y captura de eventos */}
-        {dockPanel.open && (
-          <>
-            <div
-              className="fixed inset-0 bg-black/30 z-[9998]"
-              onClick={() => setDockPanel({ open: false, dock: undefined, lado: undefined, rowId: undefined })}
-            />
-            <div
-              className="fixed right-0 top-0 h-screen w-[280px] sm:w-[320px] bg-white z-[9999] shadow-2xl border-l pointer-events-auto"
-              onMouseDown={(e) => e.stopPropagation()}
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div className="flex items-center justify-between px-4 py-3 border-b">
-                <div className="font-semibold">Muelle {dockPanel.dock}</div>
-                <Button
-                  size="icon"
-                  variant="ghost"
-                  onClick={() => setDockPanel({ open: false, dock: undefined, lado: undefined, rowId: undefined })}
-                >
-                  <X className="w-5 h-5" />
-                </Button>
-              </div>
-              <div className="p-4 space-y-3 overflow-y-auto h-[calc(100vh-56px)]">
-                {(() => {
-                  const { lado, rowId } = dockPanel;
-                  if (!lado || !rowId) return <div className="text-emerald-600 font-medium">Muelle libre</div>;
-                  const r = app.lados[lado]?.rows.find(rr => rr.id === rowId);
-                  if (!r) return <div className="text-muted-foreground">No se encontró la fila.</div>;
-
-                  return (
-                    <div className="space-y-2">
-                      <div className="flex items-center justify-between">
-                        <div className="text-sm text-muted-foreground">Lado</div>
-                        <div className="font-medium">{lado}</div>
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <div className="text-sm text-muted-foreground">Matrícula</div>
-                        <div className="font-medium truncate max-w-[150px]">{r.MATRICULA || "—"}</div>
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <div className="text-sm text-muted-foreground">Destino</div>
-                        <div className="font-medium truncate max-w-[150px]">{r.DESTINO || "—"}</div>
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <div className="text-sm text-muted-foreground">Estado</div>
-                        <Badge className={`${estadoBadgeColor(r.ESTADO)} text-white`}>{r.ESTADO || "OK"}</Badge>
-                      </div>
-
-                      <div className="grid grid-cols-2 gap-2 pt-2">
-                        <div>
-                          <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">Llegada real</div>
-                          <input
-                            className="h-9 w-full border rounded px-2 bg-white text-sm"
-                            value={(r["LLEGADA REAL"] ?? "").toString()}
-                            onChange={(e) => updateRow(lado, r.id, { "LLEGADA REAL": e.target.value })}
-                            placeholder="hh:mm / ISO"
-                          />
-                        </div>
-                        <div>
-                          <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">Salida real</div>
-                          <input
-                            className="h-9 w-full border rounded px-2 bg-white text-sm"
-                            value={(r["SALIDA REAL"] ?? "").toString()}
-                            onChange={(e) => updateRow(lado, r.id, { "SALIDA REAL": e.target.value })}
-                            placeholder="hh:mm / ISO"
-                          />
-                        </div>
-                      </div>
-
-                      <div className="grid grid-cols-2 gap-2">
-                        <div>
-                          <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">Muelle</div>
-                          <input
-                            className="h-9 w-full border rounded px-2 bg-white text-sm"
-                            value={(r["MUELLE"] ?? "").toString()}
-                            onChange={(e) => updateRow(lado, r.id, { MUELLE: e.target.value })}
-                            placeholder="nº muelle"
-                          />
-                          <div className="text-[10px] text-muted-foreground mt-0.5">* Se valida en la parrilla</div>
-                        </div>
-                        <div>
-                          <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">Precinto</div>
-                          <input
-                            className="h-9 w-full border rounded px-2 bg-white text-sm"
-                            value={(r["PRECINTO"] ?? "").toString()}
-                            onChange={(e) => updateRow(lado, r.id, { "PRECINTO": e.target.value })}
-                            placeholder="Precinto"
-                          />
-                        </div>
-                      </div>
-
-                      <div className="grid grid-cols-2 gap-2">
-                        <div>
-                          <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">Incidencias</div>
-                          <select
-                            className="h-9 w-full border rounded px-2 bg-white text-sm"
-                            value={(r["INCIDENCIAS"] ?? "").toString()}
-                            onChange={(e) => updateRow(lado, r.id, { "INCIDENCIAS": e.target.value })}
-                          >
-                            <option value="">Seleccionar</option>
-                            {INCIDENTES.map(opt => <option key={opt} value={opt}>{opt}</option>)}
-                          </select>
-                        </div>
-                        <div>
-                          <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">Estado</div>
-                          <select
-                            className="h-9 w-full border rounded px-2 bg-white text-sm"
-                            value={(r["ESTADO"] ?? "").toString()}
-                            onChange={(e) => updateRow(lado, r.id, { "ESTADO": e.target.value })}
-                          >
-                            <option value="">Seleccionar</option>
-                            {CAMION_ESTADOS.map(opt => <option key={opt} value={opt}>{opt}</option>)}
-                          </select>
-                        </div>
-                      </div>
-
-                      <div className="pt-2">
-                        <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">Observaciones</div>
-                        <input
-                          className="h-9 w-full border rounded px-2 bg-white text-sm"
-                          value={(r.OBSERVACIONES ?? "").toString()}
-                          onChange={(e) => updateRow(lado, r.id, { OBSERVACIONES: e.target.value })}
-                          placeholder="Añade notas"
-                        />
-                      </div>
-                    </div>
-                  );
-                })()}
-              </div>
-            </div>
-          </>
-        )}
+        {/* Drawer lateral (inputs 100% interactivos) */}
+        <DockDrawer app={app} dockPanel={dockPanel} setDockPanel={setDockPanel} updateRow={updateRow} />
 
         <footer className="mt-4 text-xs text-muted-foreground flex items-center justify-between">
           <div>Estados camión: <Badge className="bg-emerald-600">OK</Badge> · <Badge className="bg-amber-500">CARGANDO</Badge> · <Badge className="bg-red-600">ANULADO</Badge></div>
@@ -641,7 +511,197 @@ export default function MecoDockManager() {
   );
 }
 
-// ------------------------------ Toolbar -------------------------------------
+// ------------------------------ Panel derecha -------------------------------
+function DockRight({ app, setDockPanel, dockPanel }) {
+  const docks = useMemo(() => deriveDocks(app.lados), [app]);
+  const legend = (
+    <div className="flex items-center gap-3 text-[11px] text-muted-foreground">
+      <div className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded bg-emerald-500" /> Libre</div>
+      <div className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded bg-amber-500" /> Espera</div>
+      <div className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded bg-red-600" /> Ocupado</div>
+    </div>
+  );
+  return (
+    <Card className="w-[290px]">
+      <CardHeader className="pb-2 flex flex-col gap-2">
+        <CardTitle className="text-base">Muelles (tiempo real)</CardTitle>
+        {legend}
+      </CardHeader>
+      <CardContent className="max-h-[84vh] overflow-auto">
+        <div className="grid grid-cols-2 xs:grid-cols-3 gap-2">
+          {DOCKS.map((d) => {
+            const info = docks.get(d) || { state: "LIBRE" };
+            const color = dockColor(info.state);
+            const label = `${d}`;
+            const tooltip = info.row
+              ? `${label} • ${info.row.MATRICULA || "?"} • ${info.row.DESTINO || "?"} • ${(info.row.ESTADO || "OK")}`
+              : `${label} • Libre`;
+
+            const btn = (
+              <motion.button
+                whileTap={{ scale: 0.96 }}
+                onClick={() => setDockPanel({ open: true, dock: d, lado: info.lado, rowId: info.row?.id })}
+                className={`h-9 rounded-xl text-white text-sm font-semibold shadow ${color}`}
+              >
+                {label}
+              </motion.button>
+            );
+
+            return dockPanel.open ? (
+              <div key={d}>{btn}</div>
+            ) : (
+              <Tooltip key={d}>
+                <TooltipTrigger asChild>{btn}</TooltipTrigger>
+                <TooltipContent><p>{tooltip}</p></TooltipContent>
+              </Tooltip>
+            );
+          })}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ------------------------------ Drawer lateral ------------------------------
+function DockDrawer({ app, dockPanel, setDockPanel, updateRow }) {
+  return dockPanel.open && (
+    <>
+      <div
+        className="fixed inset-0 bg-black/30 z-[9998]"
+        onClick={() => setDockPanel({ open: false, dock: undefined, lado: undefined, rowId: undefined })}
+      />
+      <div
+        className="fixed right-0 top-0 h-screen w-[280px] sm:w-[320px] bg-white z-[9999] shadow-2xl border-l pointer-events-auto"
+        onMouseDown={(e) => e.stopPropagation()}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-4 py-3 border-b">
+          <div className="font-semibold">Muelle {dockPanel.dock}</div>
+          <Button
+            size="icon"
+            variant="ghost"
+            onClick={() => setDockPanel({ open: false, dock: undefined, lado: undefined, rowId: undefined })}
+          >
+            <X className="w-5 h-5" />
+          </Button>
+        </div>
+        <div className="p-4 space-y-3 overflow-y-auto h-[calc(100vh-56px)]">
+          {(() => {
+            const { lado, rowId } = dockPanel;
+            if (!lado || !rowId) return <div className="text-emerald-600 font-medium">Muelle libre</div>;
+            const r = app.lados[lado]?.rows.find(rr => rr.id === rowId);
+            if (!r) return <div className="text-muted-foreground">No se encontró la fila.</div>;
+
+            return (
+              <div className="space-y-2">
+                <KV label="Lado" value={lado} />
+                <KV label="Matrícula" value={r.MATRICULA || "—"} maxw />
+                <KV label="Destino" value={r.DESTINO || "—"} maxw />
+                <div className="flex items-center justify-between">
+                  <div className="text-sm text-muted-foreground">Estado</div>
+                  <Badge className={`${estadoBadgeColor(r.ESTADO)} text-white`}>{r.ESTADO || "OK"}</Badge>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 pt-2">
+                  <InputX
+                    label="Llegada real"
+                    value={(r["LLEGADA REAL"] ?? "").toString()}
+                    onChange={(v) => updateRow(lado, r.id, { "LLEGADA REAL": v })}
+                    placeholder="hh:mm / ISO"
+                  />
+                  <InputX
+                    label="Salida real"
+                    value={(r["SALIDA REAL"] ?? "").toString()}
+                    onChange={(v) => updateRow(lado, r.id, { "SALIDA REAL": v })}
+                    placeholder="hh:mm / ISO"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <InputX
+                    label="Muelle"
+                    value={(r["MUELLE"] ?? "").toString()}
+                    onChange={(v) => updateRow(lado, r.id, { MUELLE: v })}
+                    placeholder="nº muelle"
+                    help="* Se valida en la parrilla"
+                  />
+                  <InputX
+                    label="Precinto"
+                    value={(r["PRECINTO"] ?? "").toString()}
+                    onChange={(v) => updateRow(lado, r.id, { "PRECINTO": v })}
+                    placeholder="Precinto"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <SelectX
+                    label="Incidencias"
+                    value={(r["INCIDENCIAS"] ?? "").toString()}
+                    onChange={(v) => updateRow(lado, r.id, { "INCIDENCIAS": v })}
+                    options={INCIDENTES}
+                  />
+                  <SelectX
+                    label="Estado"
+                    value={(r["ESTADO"] ?? "").toString()}
+                    onChange={(v) => updateRow(lado, r.id, { "ESTADO": v })}
+                    options={CAMION_ESTADOS}
+                  />
+                </div>
+
+                <InputX
+                  label="Observaciones"
+                  value={(r.OBSERVACIONES ?? "").toString()}
+                  onChange={(v) => updateRow(lado, r.id, { OBSERVACIONES: v })}
+                  placeholder="Añade notas"
+                />
+              </div>
+            );
+          })()}
+        </div>
+      </div>
+    </>
+  );
+}
+
+function KV({ label, value, maxw }) {
+  return (
+    <div className="flex items-center justify-between">
+      <div className="text-sm text-muted-foreground">{label}</div>
+      <div className={`font-medium ${maxw ? "truncate max-w-[150px]" : ""}`}>{value}</div>
+    </div>
+  );
+}
+function InputX({ label, value, onChange, placeholder, help }) {
+  return (
+    <div>
+      <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">{label}</div>
+      <input
+        className="h-9 w-full border rounded px-2 bg-white text-sm"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+      />
+      {help ? <div className="text-[10px] text-muted-foreground mt-0.5">{help}</div> : null}
+    </div>
+  );
+}
+function SelectX({ label, value, onChange, options }) {
+  return (
+    <div>
+      <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">{label}</div>
+      <select
+        className="h-9 w-full border rounded px-2 bg-white text-sm"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      >
+        <option value="">Seleccionar</option>
+        {options.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+      </select>
+    </div>
+  );
+}
+
+// ------------------------------ Toolbar & Export ----------------------------
 function ToolbarX({ onImport, onAddRow, onClear, filterEstado, setFilterEstado, onExport }) {
   const fileRef = useRef(null);
   return (
@@ -684,10 +744,9 @@ function ToolbarX({ onImport, onAddRow, onClear, filterEstado, setFilterEstado, 
   );
 }
 
-// ----------------------------- Exportar CSV ---------------------------------
 function exportCSV(lado, app) {
-  const rows = app.lados[lado].rows;
   const headers = ALL_HEADERS;
+  const rows = app.lados[lado].rows;
   const csv = [headers.join(",")]
     .concat(rows.map((r) => headers.map((h) => (r[h] ?? "")).join(",")))
     .join("\n");
