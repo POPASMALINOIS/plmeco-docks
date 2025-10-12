@@ -13,19 +13,13 @@ import * as XLSX from "xlsx";
 import { motion } from "framer-motion";
 
 /**
- * MECO – Gestión de Muelles (WEB)
- * ----------------------------------------------------------------------------
- * - Importa .xlsx con columnas: Transportista, Matrícula, Destino, Llegada, Salida,
- *   Salida Tope, Observaciones (headers tolerantes por mayúsculas/acentos).
- * - Añade columnas editables: Muelle, Precinto, Llegada Real, Salida Real, Incidencias.
- * - 10 pestañas de "Lado 0" a "Lado 9".
- * - Vista de muelles en tiempo real (colores): Verde=Libre, Amarillo=Espera, Rojo=Ocupado.
- * - Estados de camión: OK (Verde), CARGANDO (Amarillo), ANULADO (Rojo) + filtro.
- * - Click en un muelle: muestra Destino, Matrícula y Estado.
- * - Reloj en esquina superior derecha.
- * - Persistencia localStorage + difusión opcional con WebSocket (window.MECO_WS_URL) o BroadcastChannel.
- * - UI con shadcn/ui + Tailwind. Componente exportado por defecto.
- * ----------------------------------------------------------------------------
+ * MECO – Gestión de Muelles (WEB) – JS puro
+ * - Importa .xlsx: Transportista, Matrícula, Destino, Llegada, Salida, Salida Tope, Observaciones.
+ * - Añade columnas editables: Muelle, Precinto, Llegada Real, Salida Real, Incidencias, Estado.
+ * - 10 pestañas (Lado 0..9), vista muelles en tiempo real (Verde/Amarillo/Rojo).
+ * - Click muelle: muestra Matrícula, Destino y Estado; editas Llegada/Salida real y Observaciones.
+ * - Filtro por estado: OK, CARGANDO, ANULADO.
+ * - Reloj arriba dcha, persistencia localStorage, sync entre pestañas (BroadcastChannel) y opcional WebSocket (window.MECO_WS_URL).
  */
 
 // --------------------------- Utilidades generales ---------------------------
@@ -50,8 +44,8 @@ const CAMION_ESTADOS = [
   { key: "ANULADO", label: "ANULADO", color: "bg-red-600" },
 ];
 
-const HEADER_ALIASES: Record<string, string> = {
-  transportista: "TRANSPORTISTA",
+const HEADER_ALIASES = {
+  "transportista": "TRANSPORTISTA",
   "transporte": "TRANSPORTISTA",
   "carrier": "TRANSPORTISTA",
   "matricula": "MATRICULA",
@@ -67,7 +61,7 @@ const HEADER_ALIASES: Record<string, string> = {
 };
 
 // Normaliza nombres de cabecera (case-insensitive, quita tildes)
-function norm(s: string) {
+function norm(s) {
   return (s || "")
     .toLowerCase()
     .normalize("NFD")
@@ -75,9 +69,9 @@ function norm(s: string) {
     .trim();
 }
 
-function mapHeader(name: string) {
+function mapHeader(name) {
   const n = norm(name);
-  return HEADER_ALIASES[n] || name.toUpperCase();
+  return HEADER_ALIASES[n] || (name || "").toUpperCase();
 }
 
 function nowISO() {
@@ -95,11 +89,11 @@ function nowISO() {
 }
 
 // ---------------------------- Persistencia local ----------------------------
-function useLocalStorage<T>(key: string, initial: T) {
-  const [state, setState] = useState<T>(() => {
+function useLocalStorage(key, initial) {
+  const [state, setState] = useState(() => {
     try {
       const raw = localStorage.getItem(key);
-      return raw ? (JSON.parse(raw) as T) : initial;
+      return raw ? JSON.parse(raw) : initial;
     } catch {
       return initial;
     }
@@ -109,125 +103,87 @@ function useLocalStorage<T>(key: string, initial: T) {
       localStorage.setItem(key, JSON.stringify(state));
     } catch {}
   }, [key, state]);
-  return [state, setState] as const;
+  return [state, setState];
 }
 
-// ------------------------------ Tipado de filas -----------------------------
-export type OperativaRow = {
-  id: string;
-  TRANSPORTISTA?: string;
-  MATRICULA?: string;
-  DESTINO?: string;
-  LLEGADA?: string; // planificada
-  SALIDA?: string;  // planificada
-  "SALIDA TOPE"?: string;
-  OBSERVACIONES?: string;
-  // extras editables
-  MUELLE?: number | "";
-  PRECINTO?: string;
-  "LLEGADA REAL"?: string;
-  "SALIDA REAL"?: string;
-  INCIDENCIAS?: string; // una de INCIDENTES o libre
-  ESTADO?: "OK" | "CARGANDO" | "ANULADO";
-};
-
-export type LadoState = {
-  name: string; // "Lado X"
-  rows: OperativaRow[];
-};
-
-export type AppState = {
-  lados: Record<string, LadoState>;
-};
-
 // ----------------------------- Comunicación RT -----------------------------
-/**
- * BroadcastChannel para sincronizar entre pestañas del mismo equipo.
- * Además, si window.MECO_WS_URL está definido (ws://host:puerto),
- * se usa un WebSocket para sincronizar entre equipos.
- */
-function useRealtimeSync(state: AppState, setState: (s: AppState) => void) {
-  const bcRef = useRef<BroadcastChannel | null>(null);
-  const wsRef = useRef<WebSocket | null>(null);
+function useRealtimeSync(state, setState) {
+  const bcRef = useRef(null);
+  const wsRef = useRef(null);
 
   useEffect(() => {
-    // Broadcast local
     try { bcRef.current = new BroadcastChannel("meco-docks"); } catch {}
     const bc = bcRef.current;
-    const onMsg = (ev: MessageEvent) => {
-      if (ev?.data?.type === "APP_STATE") setState(ev.data.payload);
+    const onMsg = (ev) => {
+      const data = ev && ev.data;
+      if (data && data.type === "APP_STATE") setState(data.payload);
     };
-    bc?.addEventListener("message", onMsg);
-    return () => bc?.removeEventListener("message", onMsg);
+    bc && bc.addEventListener && bc.addEventListener("message", onMsg);
+    return () => bc && bc.removeEventListener && bc.removeEventListener("message", onMsg);
   }, [setState]);
 
   useEffect(() => {
-    const url = (window as any).MECO_WS_URL as string | undefined;
+    const url = window && window.MECO_WS_URL;
     if (!url) return;
     const ws = new WebSocket(url);
     wsRef.current = ws;
     ws.onopen = () => {
-      ws.send(JSON.stringify({ type: "HELLO", role: "client" }));
+      try { ws.send(JSON.stringify({ type: "HELLO", role: "client" })); } catch {}
     };
     ws.onmessage = (e) => {
       try {
         const msg = JSON.parse(e.data);
-        if (msg?.type === "APP_STATE") setState(msg.payload);
+        if (msg && msg.type === "APP_STATE") setState(msg.payload);
       } catch {}
     };
     return () => { try { ws.close(); } catch {} };
   }, [setState]);
 
-  // Difundir cada cambio local
   useEffect(() => {
-    try { bcRef.current?.postMessage({ type: "APP_STATE", payload: state }); } catch {}
-    try { wsRef.current?.send(JSON.stringify({ type: "APP_STATE", payload: state })); } catch {}
+    try { bcRef.current && bcRef.current.postMessage({ type: "APP_STATE", payload: state }); } catch {}
+    try { wsRef.current && wsRef.current.send(JSON.stringify({ type: "APP_STATE", payload: state })); } catch {}
   }, [state]);
 }
 
 // ---------------------------- Derivación de muelles -------------------------
-export type DockState = "LIBRE" | "ESPERA" | "OCUPADO";
-
-function deriveDocks(lados: Record<string, LadoState>) {
-  const dockMap = new Map<number, { state: DockState; row?: OperativaRow; lado?: string }>();
+function deriveDocks(lados) {
+  const dockMap = new Map();
   DOCKS.forEach((d) => dockMap.set(d, { state: "LIBRE" }));
 
-  for (const ladoName of Object.keys(lados)) {
-    for (const row of lados[ladoName].rows) {
-      const mu = row.MUELLE as number | undefined;
-      if (!mu) continue;
+  Object.keys(lados).forEach((ladoName) => {
+    lados[ladoName].rows.forEach((row) => {
+      const mu = row.MUELLE;
+      if (!mu) return;
       const llegadaReal = (row["LLEGADA REAL"] || "").trim();
-      const salidaReal = (row["SALIDA REAL"] || "").trim();
+      const salidaReal  = (row["SALIDA REAL"]  || "").trim();
 
-      let state: DockState = "ESPERA"; // asignado pero sin llegada
+      let state = "ESPERA";
       if (llegadaReal) state = "OCUPADO";
-      if (salidaReal) state = "LIBRE"; // salida libera muelle
+      if (salidaReal)  state = "LIBRE";
 
-      // Si está libre por salidaReal, ignora; sino marca
       if (state !== "LIBRE") {
         dockMap.set(mu, { state, row, lado: ladoName });
       } else {
-        // Asegurar que quede LIBRE si salidaReal existe
         if (dockMap.has(mu)) {
-          const prev = dockMap.get(mu)!;
+          const prev = dockMap.get(mu);
           if (prev.state !== "OCUPADO") dockMap.set(mu, { state: "LIBRE" });
         }
       }
-    }
-  }
+    });
+  });
   return dockMap;
 }
 
-function dockColor(state: DockState) {
-  if (state === "LIBRE") return "bg-emerald-500";
+function dockColor(state) {
+  if (state === "LIBRE")  return "bg-emerald-500";
   if (state === "ESPERA") return "bg-amber-500";
-  return "bg-red-600"; // OCUPADO
+  return "bg-red-600";
 }
 
-function estadoBadgeColor(estado?: OperativaRow["ESTADO"]) {
-  if (estado === "ANULADO") return "bg-red-600";
+function estadoBadgeColor(estado) {
+  if (estado === "ANULADO")  return "bg-red-600";
   if (estado === "CARGANDO") return "bg-amber-500";
-  return "bg-emerald-600"; // OK por defecto
+  return "bg-emerald-600";
 }
 
 // ------------------------------- Tabla editable ----------------------------
@@ -248,22 +204,9 @@ const EXTRA_HEADERS = [
   "INCIDENCIAS",
   "ESTADO",
 ];
-
 const ALL_HEADERS = [...BASE_HEADERS, ...EXTRA_HEADERS];
 
-function EditableCell({
-  value,
-  onChange,
-  type = "text",
-  className = "",
-  options,
-}: {
-  value: any;
-  onChange: (v: any) => void;
-  type?: "text" | "number" | "datetime" | "select";
-  className?: string;
-  options?: string[];
-}) {
+function EditableCell({ value, onChange, type = "text", className = "", options }) {
   if (type === "select" && options) {
     return (
       <Select value={value ?? ""} onValueChange={onChange}>
@@ -288,7 +231,7 @@ function EditableCell({
   );
 }
 
-function Header({ title }: { title: string }) {
+function Header({ title }) {
   return (
     <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">
       {title}
@@ -297,21 +240,9 @@ function Header({ title }: { title: string }) {
 }
 
 function Toolbar({
-  onImport,
-  onAddRow,
-  onClear,
-  filterEstado,
-  setFilterEstado,
-  onExport,
-}: {
-  onImport: (file: File) => void;
-  onAddRow: () => void;
-  onClear: () => void;
-  filterEstado: string;
-  setFilterEstado: (s: string) => void;
-  onExport: () => void;
+  onImport, onAddRow, onClear, filterEstado, setFilterEstado, onExport,
 }) {
-  const fileRef = useRef<HTMLInputElement | null>(null);
+  const fileRef = useRef(null);
   return (
     <div className="flex items-center gap-2 flex-wrap">
       <input
@@ -320,12 +251,12 @@ function Toolbar({
         accept=".xlsx,.xls"
         className="hidden"
         onChange={(e) => {
-          const f = e.target.files?.[0];
+          const f = e.target.files && e.target.files[0];
           if (f) onImport(f);
           if (fileRef.current) fileRef.current.value = "";
         }}
       />
-      <Button size="sm" variant="secondary" onClick={() => fileRef.current?.click()}>
+      <Button size="sm" variant="secondary" onClick={() => fileRef.current && fileRef.current.click()}>
         <FileUp className="mr-2 h-4 w-4" /> Importar Excel
       </Button>
       <Button size="sm" onClick={onExport}>
@@ -357,16 +288,14 @@ function Toolbar({
 
 // ------------------------------- Componente App -----------------------------
 export default function MecoDockManager() {
-  const [app, setApp] = useLocalStorage<AppState>("meco-app", {
-    lados: Object.fromEntries(LADOS.map((n) => [n, { name: n, rows: [] }])) as Record<string, LadoState>,
+  const [app, setApp] = useLocalStorage("meco-app", {
+    lados: Object.fromEntries(LADOS.map((n) => [n, { name: n, rows: [] }]))
   });
 
-  const [active, setActive] = useState<string>(LADOS[0]);
-  const [filterEstado, setFilterEstado] = useState<string>("TODOS");
+  const [active, setActive] = useState(LADOS[0]);
+  const [filterEstado, setFilterEstado] = useState("TODOS");
   const [clock, setClock] = useState(nowISO());
-  const [dockPanel, setDockPanel] = useState<{ open: boolean; dock?: number; info?: { row?: OperativaRow; lado?: string } }>(
-    { open: false }
-  );
+  const [dockPanel, setDockPanel] = useState({ open: false, dock: undefined, info: undefined });
 
   useRealtimeSync(app, setApp);
 
@@ -377,56 +306,48 @@ export default function MecoDockManager() {
 
   const docks = useMemo(() => deriveDocks(app.lados), [app]);
 
-  function updateRow(lado: string, id: string, patch: Partial<OperativaRow>) {
+  function updateRow(lado, id, patch) {
     setApp((prev) => {
       const rows = prev.lados[lado].rows.map((r) => (r.id === id ? { ...r, ...patch } : r));
       return { ...prev, lados: { ...prev.lados, [lado]: { ...prev.lados[lado], rows } } };
     });
   }
 
-  function addRow(lado: string) {
-    const newRow: OperativaRow = {
-      id: crypto.randomUUID(),
-      ESTADO: "OK",
-    };
+  function addRow(lado) {
+    const newRow = { id: crypto.randomUUID(), ESTADO: "OK" };
     setApp((prev) => ({
       ...prev,
       lados: { ...prev.lados, [lado]: { ...prev.lados[lado], rows: [newRow, ...prev.lados[lado].rows] } },
     }));
   }
 
-  function removeRow(lado: string, id: string) {
+  function removeRow(lado, id) {
     setApp((prev) => ({
       ...prev,
       lados: { ...prev.lados, [lado]: { ...prev.lados[lado], rows: prev.lados[lado].rows.filter((r) => r.id !== id) } },
     }));
   }
 
-  function clearLado(lado: string) {
+  function clearLado(lado) {
     setApp((prev) => ({ ...prev, lados: { ...prev.lados, [lado]: { ...prev.lados[lado], rows: [] } } }));
   }
 
-  function importExcel(file: File, lado: string) {
+  function importExcel(file, lado) {
     const reader = new FileReader();
     reader.onload = (e) => {
-      const data = new Uint8Array(e.target?.result as ArrayBuffer);
+      const data = new Uint8Array(e.target.result);
       const wb = XLSX.read(data, { type: "array" });
       const ws = wb.Sheets[wb.SheetNames[0]];
-      const json: any[] = XLSX.utils.sheet_to_json(ws, { defval: "" });
+      const json = XLSX.utils.sheet_to_json(ws, { defval: "" });
 
-      const rows: OperativaRow[] = json.map((row) => {
-        const mapped: any = {};
-        for (const k of Object.keys(row)) {
+      const rows = json.map((row) => {
+        const mapped = {};
+        Object.keys(row).forEach((k) => {
           const mk = mapHeader(k);
           mapped[mk] = row[k];
-        }
-        // Garantiza todas las cabeceras
-        for (const h of ALL_HEADERS) if (!(h in mapped)) mapped[h] = "";
-        return {
-          id: crypto.randomUUID(),
-          ...mapped,
-          ESTADO: mapped.ESTADO || "OK",
-        } as OperativaRow;
+        });
+        [...ALL_HEADERS].forEach((h) => { if (!(h in mapped)) mapped[h] = ""; });
+        return { id: crypto.randomUUID(), ...mapped, ESTADO: mapped.ESTADO || "OK" };
       });
 
       setApp((prev) => ({
@@ -437,12 +358,12 @@ export default function MecoDockManager() {
     reader.readAsArrayBuffer(file);
   }
 
-  function exportCSV(lado: string) {
+  function exportCSV(lado) {
     const rows = app.lados[lado].rows;
     const headers = ALL_HEADERS;
-    const csv = [headers.join(",")].concat(
-      rows.map((r) => headers.map((h) => (r as any)[h] ?? "").join(","))
-    ).join("\n");
+    const csv = [headers.join(",")]
+      .concat(rows.map((r) => headers.map((h) => (r[h] ?? "")).join(",")))
+      .join("\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -451,7 +372,7 @@ export default function MecoDockManager() {
     URL.revokeObjectURL(url);
   }
 
-  function filteredRows(lado: string) {
+  function filteredRows(lado) {
     const list = app.lados[lado].rows;
     if (filterEstado === "TODOS") return list;
     return list.filter((r) => (r.ESTADO || "OK") === filterEstado);
@@ -512,31 +433,29 @@ export default function MecoDockManager() {
                       <ScrollArea className="h-[48vh]">
                         {filteredRows(n).map((row) => (
                           <div key={row.id} className="grid grid-cols-12 gap-px bg-slate-200">
-                            {/* Campos base + extra */}
                             {ALL_HEADERS.map((h, idx) => {
                               const isNumber = h === "MUELLE";
                               const isEstado = h === "ESTADO";
-                              const isInc = h === "INCIDENCIAS";
+                              const isInc    = h === "INCIDENCIAS";
                               const input = (
                                 <EditableCell
-                                  value={(row as any)[h]}
+                                  value={row[h]}
                                   onChange={(v) => {
-                                    // Validación de muelle: debe existir o quedar vacío
                                     if (h === "MUELLE") {
                                       const val = String(v).trim();
                                       if (!val) return updateRow(n, row.id, { MUELLE: "" });
                                       const num = Number(val);
-                                      if (!DOCKS.includes(num)) return; // ignora inválidos
+                                      if (!DOCKS.includes(num)) return;
                                       return updateRow(n, row.id, { MUELLE: num });
                                     }
-                                    if (h === "ESTADO") return updateRow(n, row.id, { ESTADO: v as any });
+                                    if (h === "ESTADO")      return updateRow(n, row.id, { ESTADO: v });
                                     if (h === "INCIDENCIAS") return updateRow(n, row.id, { INCIDENCIAS: v });
-                                    updateRow(n, row.id, { [h]: v } as any);
+                                    updateRow(n, row.id, { [h]: v });
                                   }}
                                   type={isNumber ? "number" : isEstado || isInc ? "select" : "text"}
                                   options={
                                     isEstado ? CAMION_ESTADOS.map((e) => e.key) :
-                                    isInc ? INCIDENTES : undefined
+                                    isInc    ? INCIDENTES : undefined
                                   }
                                   className={`rounded-none border-0 bg-white ${idx % 2 ? "" : ""}`}
                                 />
@@ -569,7 +488,7 @@ export default function MecoDockManager() {
             <CardContent>
               <div className="grid grid-cols-4 sm:grid-cols-5 gap-2">
                 {DOCKS.map((d) => {
-                  const info = docks.get(d)!;
+                  const info = docks.get(d) || { state: "LIBRE" };
                   const color = dockColor(info.state);
                   const label = `${d}`;
                   const tooltip = info.row
@@ -606,12 +525,8 @@ export default function MecoDockManager() {
             <div className="mt-4 space-y-3">
               {(() => {
                 const info = dockPanel.info;
-                if (!info || !dockPanel.dock) return (
-                  <div className="text-muted-foreground">Sin información.</div>
-                );
-                if (!info.row) return (
-                  <div className="text-emerald-600 font-medium">Muelle libre</div>
-                );
+                if (!info || !dockPanel.dock) return <div className="text-muted-foreground">Sin información.</div>;
+                if (!info.row) return <div className="text-emerald-600 font-medium">Muelle libre</div>;
                 const r = info.row;
                 return (
                   <div className="space-y-2">
@@ -636,7 +551,7 @@ export default function MecoDockManager() {
                         <Header title="Llegada real" />
                         <Input
                           value={r["LLEGADA REAL"] || ""}
-                          onChange={(e) => updateRow(info.lado!, r.id, { "LLEGADA REAL": e.target.value })}
+                          onChange={(e) => updateRow(info.lado, r.id, { "LLEGADA REAL": e.target.value })}
                           placeholder="hh:mm / ISO"
                         />
                       </div>
@@ -644,7 +559,7 @@ export default function MecoDockManager() {
                         <Header title="Salida real" />
                         <Input
                           value={r["SALIDA REAL"] || ""}
-                          onChange={(e) => updateRow(info.lado!, r.id, { "SALIDA REAL": e.target.value })}
+                          onChange={(e) => updateRow(info.lado, r.id, { "SALIDA REAL": e.target.value })}
                           placeholder="hh:mm / ISO"
                         />
                       </div>
@@ -653,7 +568,7 @@ export default function MecoDockManager() {
                       <Header title="Observaciones" />
                       <Input
                         value={r.OBSERVACIONES || ""}
-                        onChange={(e) => updateRow(info.lado!, r.id, { OBSERVACIONES: e.target.value })}
+                        onChange={(e) => updateRow(info.lado, r.id, { OBSERVACIONES: e.target.value })}
                         placeholder="Añade notas"
                       />
                     </div>
