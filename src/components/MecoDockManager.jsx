@@ -13,10 +13,10 @@ import { motion } from "framer-motion";
 
 /**
  * PLMECO – Gestión de Muelles (WEB)
- * - Importador XLSX robusto (autodetecta cabecera, soporta merges, limpia saltos).
- * - Todas las celdas importadas son editables (ESTADO/INCIDENCIAS select; MUELLE validado).
- * - Header fijo y sincronizado (un solo contenedor scroll vertical+horizontal).
- * - PRECINTO visible y editable.
+ * Cambios clave:
+ * - MUELLE editable como texto (validación diferida en la vista de muelles).
+ * - Selects de ESTADO/INCIDENCIAS arreglados (controlados sin forzar "").
+ * - Contenedor de tabla más alto (max-h-[78vh]) y header sticky sincronizado.
  */
 
 // --------------------------- Constantes generales ---------------------------
@@ -191,8 +191,10 @@ function deriveDocks(lados) {
 
   Object.keys(lados).forEach((ladoName) => {
     lados[ladoName].rows.forEach((row) => {
-      const mu = row.MUELLE;
-      if (!mu) return;
+      // MUELLE se guarda como texto para permitir tecleo libre; validamos aquí
+      const muNum = Number(String(row.MUELLE ?? "").trim());
+      if (!Number.isFinite(muNum) || !DOCKS.includes(muNum)) return;
+
       const llegadaReal = (row["LLEGADA REAL"] || "").trim();
       const salidaReal  = (row["SALIDA REAL"]  || "").trim();
 
@@ -201,11 +203,11 @@ function deriveDocks(lados) {
       if (salidaReal)  state = "LIBRE";
 
       if (state !== "LIBRE") {
-        dockMap.set(mu, { state, row, lado: ladoName });
+        dockMap.set(muNum, { state, row, lado: ladoName });
       } else {
-        if (dockMap.has(mu)) {
-          const prev = dockMap.get(mu);
-          if (prev.state !== "OCUPADO") dockMap.set(mu, { state: "LIBRE" });
+        if (dockMap.has(muNum)) {
+          const prev = dockMap.get(muNum);
+          if (prev.state !== "OCUPADO") dockMap.set(muNum, { state: "LIBRE" });
         }
       }
     });
@@ -226,8 +228,10 @@ function estadoBadgeColor(estado) {
 // ------------------------------- Tabla editable ----------------------------
 function EditableCell({ value, onChange, type = "text", className = "", options }) {
   if (type === "select" && options) {
+    // Para shadcn Select: si value es "", mejor pasar undefined (permite seleccionar)
+    const controlledValue = value ? value.toString() : undefined;
     return (
-      <Select value={(value ?? "").toString()} onValueChange={onChange}>
+      <Select value={controlledValue} onValueChange={onChange}>
         <SelectTrigger className={`h-8 ${className}`}>
           <SelectValue placeholder="Seleccionar" />
         </SelectTrigger>
@@ -320,11 +324,7 @@ function tryParseSheet(ws, sheetName) {
     const allEmpty = keysMin.every(k => String(obj[k] || "").trim() === "");
     if (allEmpty) return;
 
-    // Validar muelle
-    if (obj["MUELLE"] !== "") {
-      const num = Number(String(obj["MUELLE"]).trim());
-      obj["MUELLE"] = Number.isFinite(num) && DOCKS.includes(num) ? num : "";
-    }
+    // MUELLE se guarda como texto (validación diferida)
     // Estado por defecto
     if (!obj["ESTADO"]) obj["ESTADO"] = "OK";
 
@@ -451,7 +451,7 @@ export default function MecoDockManager() {
   return (
     <TooltipProvider>
       <div className="w-full min-h-screen p-4 md:p-6 bg-gradient-to-b from-slate-50 to-white">
-        <header className="flex items-center gap-2 justify-between mb-4">
+        <header className="flex items-center gap-2 justify-between mb-3">
           <h1 className="text-2xl font-bold tracking-tight">PLMECO · Gestión de Muelles</h1>
           <div className="text-right">
             <div className="text-xs text-muted-foreground">Fecha y hora</div>
@@ -459,7 +459,7 @@ export default function MecoDockManager() {
           </div>
         </header>
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
           {/* Columna izquierda: pestañas + tabla */}
           <Card className="lg:col-span-2">
             <CardHeader className="pb-2">
@@ -472,7 +472,7 @@ export default function MecoDockManager() {
             </CardHeader>
             <CardContent>
               {debugOpen && (
-                <div className="mb-4 p-3 border rounded text-xs bg-amber-50">
+                <div className="mb-3 p-3 border rounded text-xs bg-amber-50">
                   <div className="font-semibold mb-1">Diagnóstico última importación</div>
                   {!importInfo ? (
                     <div className="text-muted-foreground">Aún no has importado ningún Excel.</div>
@@ -521,11 +521,11 @@ export default function MecoDockManager() {
                   const rows = app.lados[n].rows;
                   const gridTemplate = computeColumnTemplate(rows);
                   return (
-                    <TabsContent key={n} value={n} className="mt-4">
+                    <TabsContent key={n} value={n} className="mt-3">
                       <div className="border rounded-xl overflow-hidden">
-                        {/* Un ÚNICO contenedor con scroll horizontal y vertical sincronizado */}
-                        <div className="overflow-auto max-h-[58vh]">
-                          {/* Header fijo dentro del MISMO contenedor de scroll */}
+                        {/* ÚNICO contenedor con scroll h+v; header sticky */}
+                        <div className="overflow-auto max-h-[78vh]">
+                          {/* Header */}
                           <div
                             className="grid bg-slate-200 sticky top-0 z-10"
                             style={{ gridTemplateColumns: gridTemplate }}
@@ -540,7 +540,7 @@ export default function MecoDockManager() {
                             </div>
                           </div>
 
-                          {/* Filas – MISMO contenedor -> header y datos se desplazan juntos */}
+                          {/* Filas */}
                           <div>
                             {filteredRows(n).map((row) => (
                               <div
@@ -549,26 +549,21 @@ export default function MecoDockManager() {
                                 style={{ gridTemplateColumns: gridTemplate }}
                               >
                                 {ALL_HEADERS.map((h) => {
-                                  const isNumber = h === "MUELLE";
                                   const isEstado = h === "ESTADO";
                                   const isInc    = h === "INCIDENCIAS";
+                                  // MUELLE ahora se trata como TEXTO para permitir tecleo libre
+                                  const isText = !isEstado && !isInc;
                                   return (
                                     <div key={h} className="p-1 border-r border-slate-100 flex items-center">
                                       <EditableCell
                                         value={row[h]}
                                         onChange={(v) => {
-                                          if (h === "MUELLE") {
-                                            const val = String(v).trim();
-                                            if (!val) return updateRow(n, row.id, { MUELLE: "" });
-                                            const num = Number(val);
-                                            if (!DOCKS.includes(num)) return;
-                                            return updateRow(n, row.id, { MUELLE: num });
-                                          }
-                                          if (h === "ESTADO")      return updateRow(n, row.id, { ESTADO: v });
-                                          if (h === "INCIDENCIAS") return updateRow(n, row.id, { INCIDENCIAS: v });
-                                          updateRow(n, row.id, { [h]: v }); // resto (incluye PRECINTO) editable
+                                          if (isEstado)      return updateRow(n, row.id, { ESTADO: v });
+                                          if (isInc)         return updateRow(n, row.id, { INCIDENCIAS: v });
+                                          // resto, incluyendo MUELLE/PRECINTO/etc, como texto
+                                          updateRow(n, row.id, { [h]: v });
                                         }}
-                                        type={isNumber ? "number" : (isEstado || isInc) ? "select" : "text"}
+                                        type={isText ? "text" : "select"}
                                         options={
                                           isEstado ? CAMION_ESTADOS.map((e) => e.key) :
                                           isInc    ? INCIDENTES : undefined
@@ -599,7 +594,11 @@ export default function MecoDockManager() {
           <Card className="lg:col-span-1">
             <CardHeader className="pb-2 flex flex-col gap-2">
               <CardTitle>Muelles (tiempo real)</CardTitle>
-              {legend}
+              <div className="flex items-center gap-4 text-xs text-muted-foreground">
+                <div className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded bg-emerald-500" /> Libre</div>
+                <div className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded bg-amber-500" /> Espera</div>
+                <div className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded bg-red-600" /> Ocupado</div>
+              </div>
             </CardHeader>
             <CardContent>
               <div className="grid grid-cols-4 sm:grid-cols-5 gap-2">
@@ -685,15 +684,10 @@ export default function MecoDockManager() {
                         <Header title="Muelle" />
                         <Input
                           value={(r["MUELLE"] ?? "").toString()}
-                          onChange={(e) => {
-                            const val = e.target.value.trim();
-                            if (!val) return updateRow(info.lado, r.id, { MUELLE: "" });
-                            const num = Number(val);
-                            if (!DOCKS.includes(num)) return;
-                            updateRow(info.lado, r.id, { MUELLE: num });
-                          }}
+                          onChange={(e) => updateRow(info.lado, r.id, { MUELLE: e.target.value })}
                           placeholder="nº muelle"
                         />
+                        <div className="text-[10px] text-muted-foreground mt-0.5">* Se valida en la parrilla (312–337, 351–369)</div>
                       </div>
                       <div>
                         <Header title="Precinto" />
@@ -708,7 +702,7 @@ export default function MecoDockManager() {
                       <div>
                         <Header title="Incidencias" />
                         <Select
-                          value={(r["INCIDENCIAS"] ?? "").toString()}
+                          value={r["INCIDENCIAS"] ? r["INCIDENCIAS"].toString() : undefined}
                           onValueChange={(v) => updateRow(info.lado, r.id, { "INCIDENCIAS": v })}
                         >
                           <SelectTrigger className="h-9"><SelectValue placeholder="Seleccionar" /></SelectTrigger>
@@ -720,7 +714,7 @@ export default function MecoDockManager() {
                       <div>
                         <Header title="Estado" />
                         <Select
-                          value={(r["ESTADO"] ?? "OK").toString()}
+                          value={r["ESTADO"] ? r["ESTADO"].toString() : undefined}
                           onValueChange={(v) => updateRow(info.lado, r.id, { "ESTADO": v })}
                         >
                           <SelectTrigger className="h-9"><SelectValue placeholder="Seleccionar" /></SelectTrigger>
@@ -745,7 +739,7 @@ export default function MecoDockManager() {
           </SheetContent>
         </Sheet>
 
-        <footer className="mt-6 text-xs text-muted-foreground flex flex-col sm:flex-row gap-2 sm:items-center sm:justify-between">
+        <footer className="mt-4 text-xs text-muted-foreground flex flex-col sm:flex-row gap-2 sm:items-center sm:justify-between">
           <div>Estados camión: <Badge className="bg-emerald-600">OK</Badge> · <Badge className="bg-amber-500">CARGANDO</Badge> · <Badge className="bg-red-600">ANULADO</Badge></div>
           <div>© {new Date().getFullYear()} PLMECO · Plataforma Logística Meco (Inditex)</div>
         </footer>
