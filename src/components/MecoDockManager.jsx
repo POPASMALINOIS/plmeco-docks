@@ -3,7 +3,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -13,10 +12,10 @@ import { motion } from "framer-motion";
 
 /**
  * PLMECO – Gestión de Muelles (WEB)
- * Cambios clave:
- * - MUELLE editable como texto (validación diferida en la vista de muelles).
- * - Selects de ESTADO/INCIDENCIAS arreglados (controlados sin forzar "").
- * - Contenedor de tabla más alto (max-h-[78vh]) y header sticky sincronizado.
+ * - MUELLE editable como texto (validación diferida en parrilla).
+ * - Selects de ESTADO/INCIDENCIAS con <select> nativo (funciona siempre).
+ * - Contenedor tabla alto (84vh) con header sticky y auto-ancho de columnas.
+ * - Panel de muelle estrecho y a pantalla completa.
  */
 
 // --------------------------- Constantes generales ---------------------------
@@ -33,11 +32,7 @@ const INCIDENTES = [
   "CAMION ANULADO",
   "CAMION NO APTO",
 ];
-const CAMION_ESTADOS = [
-  { key: "OK", label: "OK" },
-  { key: "CARGANDO", label: "CARGANDO" },
-  { key: "ANULADO", label: "ANULADO" },
-];
+const CAMION_ESTADOS = ["OK", "CARGANDO", "ANULADO"];
 
 const BASE_HEADERS = [
   "TRANSPORTISTA",
@@ -79,7 +74,6 @@ const HEADER_ALIASES = {
   "cierre": "SALIDA TOPE",
   "observaciones": "OBSERVACIONES",
   "comentarios": "OBSERVACIONES",
-  // extras vistos
   "ok": "ESTADO",
   "fuera": "PRECINTO",
 };
@@ -114,7 +108,7 @@ function coerceCell(v) {
   return String(v).replace(/\r?\n+/g, " ").replace(/\s{2,}/g, " ").trim();
 }
 
-// Autoajuste de ancho por contenido (ancho en "ch")
+// Autoancho por contenido (ancho en "ch")
 function widthFromLen(len) {
   const ch = Math.min(Math.max(len * 0.7 + 3, 10), 46); // 10–46ch
   return `${Math.round(ch)}ch`;
@@ -127,8 +121,7 @@ function computeColumnTemplate(rows) {
     );
     return widthFromLen(maxLen);
   });
-  // Acciones fija 8rem
-  return `${widths.join(" ")} 8rem`;
+  return `${widths.join(" ")} 8rem`; // última es Acciones (8rem)
 }
 
 // ---------------------------- Persistencia local ----------------------------
@@ -191,7 +184,6 @@ function deriveDocks(lados) {
 
   Object.keys(lados).forEach((ladoName) => {
     lados[ladoName].rows.forEach((row) => {
-      // MUELLE se guarda como texto para permitir tecleo libre; validamos aquí
       const muNum = Number(String(row.MUELLE ?? "").trim());
       if (!Number.isFinite(muNum) || !DOCKS.includes(muNum)) return;
 
@@ -225,23 +217,27 @@ function estadoBadgeColor(estado) {
   return "bg-emerald-600";
 }
 
-// ------------------------------- Tabla editable ----------------------------
+// ------------------------------- Celdas editables ---------------------------
+function SelectNative({ value, onChange, options, placeholder = "Seleccionar", className="" }) {
+  // value siempre string; placeholder como opción vacía
+  const v = (value ?? "").toString();
+  return (
+    <select
+      className={`h-8 w-full border rounded px-2 bg-white text-sm ${className}`}
+      value={v}
+      onChange={(e) => onChange(e.target.value)}
+    >
+      <option value="">{placeholder}</option>
+      {options.map(opt => (
+        <option key={opt} value={opt}>{opt}</option>
+      ))}
+    </select>
+  );
+}
+
 function EditableCell({ value, onChange, type = "text", className = "", options }) {
   if (type === "select" && options) {
-    // Para shadcn Select: si value es "", mejor pasar undefined (permite seleccionar)
-    const controlledValue = value ? value.toString() : undefined;
-    return (
-      <Select value={controlledValue} onValueChange={onChange}>
-        <SelectTrigger className={`h-8 ${className}`}>
-          <SelectValue placeholder="Seleccionar" />
-        </SelectTrigger>
-        <SelectContent>
-          {options.map((o) => (
-            <SelectItem key={o} value={o}>{o}</SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-    );
+    return <SelectNative value={value} onChange={onChange} options={options} className={className} />;
   }
   return (
     <Input
@@ -281,10 +277,8 @@ function expandHeaderMerges(ws, headerRowIdx) {
 }
 
 function tryParseSheet(ws, sheetName) {
-  // 1) Leer como matriz para detectar cabecera
   const rows2D = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
 
-  // 2) Elegir fila cabecera con mayor score
   let headerRowIdx = -1, bestScore = -1, limit = Math.min(rows2D.length, 40);
   for (let r = 0; r < limit; r++) {
     const mapped = (rows2D[r] || []).map((h) => mapHeader(h));
@@ -293,10 +287,8 @@ function tryParseSheet(ws, sheetName) {
   }
   if (headerRowIdx < 0) headerRowIdx = 0;
 
-  // 3) Expandir merges en fila cabecera
   expandHeaderMerges(ws, headerRowIdx);
 
-  // 4) Ajustar rango para empezar en cabecera
   let ws2 = ws;
   if (ws["!ref"]) {
     const range = XLSX.utils.decode_range(ws["!ref"]);
@@ -304,7 +296,6 @@ function tryParseSheet(ws, sheetName) {
     ws2 = { ...ws, "!ref": XLSX.utils.encode_range(range) };
   }
 
-  // 5) JSON con esa cabecera
   const json = XLSX.utils.sheet_to_json(ws2, { defval: "", raw: false });
   const rows = [];
   const seenHeaders = new Set();
@@ -316,16 +307,12 @@ function tryParseSheet(ws, sheetName) {
       seenHeaders.add(k);
       obj[k] = coerceCell(row[kRaw]);
     });
-    // Rellenar claves esperadas
     for (const h of EXPECTED_KEYS) if (!(h in obj)) obj[h] = "";
 
-    // Descartar filas totalmente vacías en campos clave
     const keysMin = ["TRANSPORTISTA","MATRICULA","DESTINO","LLEGADA","SALIDA","OBSERVACIONES"];
     const allEmpty = keysMin.every(k => String(obj[k] || "").trim() === "");
     if (allEmpty) return;
 
-    // MUELLE se guarda como texto (validación diferida)
-    // Estado por defecto
     if (!obj["ESTADO"]) obj["ESTADO"] = "OK";
 
     rows.push({ id: crypto.randomUUID(), ...obj });
@@ -378,7 +365,6 @@ export default function MecoDockManager() {
     setApp((prev) => ({ ...prev, lados: { ...prev.lados, [lado]: { ...prev.lados[lado], rows: [] } } }));
   }
 
-  // -------------------------- Importar Excel (todas hojas) -------------------
   function importExcel(file, lado) {
     const reader = new FileReader();
     reader.onload = (e) => {
@@ -386,14 +372,12 @@ export default function MecoDockManager() {
         const data = new Uint8Array(e.target.result);
         const wb = XLSX.read(data, { type: "array", cellDates: true });
         const results = [];
-
         for (const name of wb.SheetNames) {
           const ws = wb.Sheets[name];
           if (!ws) continue;
           const parsed = tryParseSheet(ws, name);
           results.push(parsed);
         }
-
         results.sort((a, b) => {
           if (b.rows.length !== a.rows.length) return b.rows.length - a.rows.length;
           return b.bestScore - a.bestScore;
@@ -524,7 +508,7 @@ export default function MecoDockManager() {
                     <TabsContent key={n} value={n} className="mt-3">
                       <div className="border rounded-xl overflow-hidden">
                         {/* ÚNICO contenedor con scroll h+v; header sticky */}
-                        <div className="overflow-auto max-h-[78vh]">
+                        <div className="overflow-auto max-h-[84vh]">
                           {/* Header */}
                           <div
                             className="grid bg-slate-200 sticky top-0 z-10"
@@ -551,23 +535,24 @@ export default function MecoDockManager() {
                                 {ALL_HEADERS.map((h) => {
                                   const isEstado = h === "ESTADO";
                                   const isInc    = h === "INCIDENCIAS";
-                                  // MUELLE ahora se trata como TEXTO para permitir tecleo libre
                                   const isText = !isEstado && !isInc;
                                   return (
                                     <div key={h} className="p-1 border-r border-slate-100 flex items-center">
                                       <EditableCell
                                         value={row[h]}
                                         onChange={(v) => {
-                                          if (isEstado)      return updateRow(n, row.id, { ESTADO: v });
-                                          if (isInc)         return updateRow(n, row.id, { INCIDENCIAS: v });
-                                          // resto, incluyendo MUELLE/PRECINTO/etc, como texto
+                                          if (isEstado) {
+                                            const val = (v || "").toString().trim();
+                                            return updateRow(n, row.id, { ESTADO: CAMION_ESTADOS.includes(val) ? val : "" });
+                                          }
+                                          if (isInc) {
+                                            const val = (v || "").toString().trim();
+                                            return updateRow(n, row.id, { INCIDENCIAS: INCIDENTES.includes(val) ? val : "" });
+                                          }
                                           updateRow(n, row.id, { [h]: v });
                                         }}
                                         type={isText ? "text" : "select"}
-                                        options={
-                                          isEstado ? CAMION_ESTADOS.map((e) => e.key) :
-                                          isInc    ? INCIDENTES : undefined
-                                        }
+                                        options={isEstado ? CAMION_ESTADOS : isInc ? INCIDENTES : undefined}
                                         className="rounded-none border-0 bg-white"
                                       />
                                     </div>
@@ -590,18 +575,14 @@ export default function MecoDockManager() {
             </CardContent>
           </Card>
 
-          {/* Columna derecha: estado de muelles */}
-          <Card className="lg:col-span-1">
+          {/* Columna derecha: estado de muelles (vertical, sticky) */}
+          <Card className="lg:col-span-1 lg:sticky lg:top-4 self-start">
             <CardHeader className="pb-2 flex flex-col gap-2">
               <CardTitle>Muelles (tiempo real)</CardTitle>
-              <div className="flex items-center gap-4 text-xs text-muted-foreground">
-                <div className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded bg-emerald-500" /> Libre</div>
-                <div className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded bg-amber-500" /> Espera</div>
-                <div className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded bg-red-600" /> Ocupado</div>
-              </div>
+              {legend}
             </CardHeader>
-            <CardContent>
-              <div className="grid grid-cols-4 sm:grid-cols-5 gap-2">
+            <CardContent className="max-h-[84vh] overflow-auto">
+              <div className="grid grid-cols-3 md:grid-cols-4 gap-2">
                 {DOCKS.map((d) => {
                   const info = docks.get(d) || { state: "LIBRE" };
                   const color = dockColor(info.state);
@@ -631,13 +612,13 @@ export default function MecoDockManager() {
           </Card>
         </div>
 
-        {/* Panel lateral info de muelle */}
+        {/* Panel lateral info de muelle – estrecho y alto completo */}
         <Sheet open={dockPanel.open} onOpenChange={(o) => setDockPanel((p) => ({ ...p, open: o }))}>
-          <SheetContent side="right" className="w-[420px] sm:w-[480px]">
+          <SheetContent side="right" className="w-[300px] sm:w-[340px] h-screen overflow-y-auto">
             <SheetHeader>
               <SheetTitle>Muelle {dockPanel.dock}</SheetTitle>
             </SheetHeader>
-            <div className="mt-4 space-y-3">
+            <div className="mt-4 space-y-3 pb-6">
               {(() => {
                 const info = dockPanel.info;
                 if (!info || !dockPanel.dock) return <div className="text-muted-foreground">Sin información.</div>;
@@ -651,11 +632,11 @@ export default function MecoDockManager() {
                     </div>
                     <div className="flex items-center justify-between">
                       <div className="text-sm text-muted-foreground">Matrícula</div>
-                      <div className="font-medium">{r.MATRICULA || "—"}</div>
+                      <div className="font-medium truncate max-w-[160px]">{r.MATRICULA || "—"}</div>
                     </div>
                     <div className="flex items-center justify-between">
                       <div className="text-sm text-muted-foreground">Destino</div>
-                      <div className="font-medium">{r.DESTINO || "—"}</div>
+                      <div className="font-medium truncate max-w-[160px]">{r.DESTINO || "—"}</div>
                     </div>
                     <div className="flex items-center justify-between">
                       <div className="text-sm text-muted-foreground">Estado</div>
@@ -687,7 +668,7 @@ export default function MecoDockManager() {
                           onChange={(e) => updateRow(info.lado, r.id, { MUELLE: e.target.value })}
                           placeholder="nº muelle"
                         />
-                        <div className="text-[10px] text-muted-foreground mt-0.5">* Se valida en la parrilla (312–337, 351–369)</div>
+                        <div className="text-[10px] text-muted-foreground mt-0.5">* Se valida en la parrilla</div>
                       </div>
                       <div>
                         <Header title="Precinto" />
@@ -701,27 +682,19 @@ export default function MecoDockManager() {
                     <div className="grid grid-cols-2 gap-2">
                       <div>
                         <Header title="Incidencias" />
-                        <Select
-                          value={r["INCIDENCIAS"] ? r["INCIDENCIAS"].toString() : undefined}
-                          onValueChange={(v) => updateRow(info.lado, r.id, { "INCIDENCIAS": v })}
-                        >
-                          <SelectTrigger className="h-9"><SelectValue placeholder="Seleccionar" /></SelectTrigger>
-                          <SelectContent>
-                            {INCIDENTES.map(opt => <SelectItem key={opt} value={opt}>{opt}</SelectItem>)}
-                          </SelectContent>
-                        </Select>
+                        <SelectNative
+                          value={r["INCIDENCIAS"]}
+                          onChange={(v) => updateRow(info.lado, r.id, { "INCIDENCIAS": v })}
+                          options={INCIDENTES}
+                        />
                       </div>
                       <div>
                         <Header title="Estado" />
-                        <Select
-                          value={r["ESTADO"] ? r["ESTADO"].toString() : undefined}
-                          onValueChange={(v) => updateRow(info.lado, r.id, { "ESTADO": v })}
-                        >
-                          <SelectTrigger className="h-9"><SelectValue placeholder="Seleccionar" /></SelectTrigger>
-                          <SelectContent>
-                            {CAMION_ESTADOS.map(opt => <SelectItem key={opt.key} value={opt.key}>{opt.label}</SelectItem>)}
-                          </SelectContent>
-                        </Select>
+                        <SelectNative
+                          value={r["ESTADO"]}
+                          onChange={(v) => updateRow(info.lado, r.id, { "ESTADO": v })}
+                          options={CAMION_ESTADOS}
+                        />
                       </div>
                     </div>
                     <div className="pt-2">
@@ -780,17 +753,12 @@ function ToolbarX({
       </Button>
       <div className="ml-auto flex items-center gap-2">
         <span className="text-sm text-muted-foreground">Filtrar estado</span>
-        <Select value={filterEstado} onValueChange={setFilterEstado}>
-          <SelectTrigger className="h-8 w-[160px]">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="TODOS">Todos</SelectItem>
-            {CAMION_ESTADOS.map((e) => (
-              <SelectItem key={e.key} value={e.key}>{e.label}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        <SelectNative
+          value={filterEstado === "TODOS" ? "" : filterEstado}
+          onChange={(v) => setFilterEstado(v || "TODOS")}
+          options={CAMION_ESTADOS}
+          className="w-[160px]"
+        />
       </div>
     </div>
   );
