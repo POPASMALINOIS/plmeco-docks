@@ -1,11 +1,10 @@
 import React from 'react'
 
+const SheetContext = React.createContext({ open: false, onOpenChange: () => {} })
+
 export function Sheet({ open, onOpenChange, children }) {
-  // Pasamos open vía contexto simple
   return <SheetContext.Provider value={{ open, onOpenChange }}>{children}</SheetContext.Provider>
 }
-
-const SheetContext = React.createContext({ open: false, onOpenChange: () => {} })
 
 export function SheetContent({ side='right', className='', children }) {
   const { open, onOpenChange } = React.useContext(SheetContext)
@@ -27,4 +26,4 @@ export function SheetContent({ side='right', className='', children }) {
 }
 
 export function SheetHeader({ children }) { return <div className="mb-2">{children}</div> }
-export function SheetTitle({ children }) { return <div className="text-lg font-semibold">{children}</div> }
+export function SheetTitle({ children })  { return <div className="text-lg font-semibold">{children}</div> }
