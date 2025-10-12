@@ -11,9 +11,10 @@ import { motion } from "framer-motion";
 
 /**
  * PLMECO – Gestión de Muelles (WEB)
- * - Drawer lateral propio (sin Sheet) => inputs/selects internos interactúan bien.
- * - Selects nativos en tabla y panel.
- * - Columna de muelles estrecha y vertical; tabla alta con header sticky.
+ * Fixes:
+ * - Panel de muelle usa fila VIVA (lado + rowId) → inputs/selects editables de verdad.
+ * - Columna MATRÍCULA con ancho extra para evitar cortes.
+ * - Layout: derecha estrecha y vertical; tabla alta con header sticky.
  */
 
 // --------------------------- Constantes generales ---------------------------
@@ -108,7 +109,7 @@ function coerceCell(v) {
 
 // Autoancho por contenido (ancho en "ch")
 function widthFromLen(len) {
-  const ch = Math.min(Math.max(len * 0.7 + 3, 10), 46);
+  const ch = Math.min(Math.max(len * 0.7 + 3, 10), 56); // subo máximo a 56ch
   return `${Math.round(ch)}ch`;
 }
 function computeColumnTemplate(rows) {
@@ -117,6 +118,8 @@ function computeColumnTemplate(rows) {
       (h || "").length,
       ...rows.map(r => ((r?.[h] ?? "") + "").length)
     );
+    // MATRÍCULA → ancho extra para que no se corte
+    if (h === "MATRICULA") return widthFromLen(maxLen + 6); // +6ch extra
     return widthFromLen(maxLen);
   });
   return `${widths.join(" ")} 8rem`; // última = Acciones
@@ -320,7 +323,8 @@ export default function MecoDockManager() {
   const [active, setActive] = useState(LADOS[0]);
   const [filterEstado, setFilterEstado] = useState("TODOS");
   const [clock, setClock] = useState(nowISO());
-  const [dockPanel, setDockPanel] = useState({ open: false, dock: undefined, info: undefined });
+  // Panel ahora guarda: open, dock, lado y rowId (no el objeto row completo)
+  const [dockPanel, setDockPanel] = useState({ open: false, dock: undefined, lado: undefined, rowId: undefined });
   const [debugOpen, setDebugOpen] = useState(false);
   const [importInfo, setImportInfo] = useState(null);
 
@@ -596,7 +600,12 @@ export default function MecoDockManager() {
                       <TooltipTrigger asChild>
                         <motion.button
                           whileTap={{ scale: 0.96 }}
-                          onClick={() => setDockPanel({ open: true, dock: d, info })}
+                          onClick={() => setDockPanel({
+                            open: true,
+                            dock: d,
+                            lado: info.lado,
+                            rowId: info.row?.id
+                          })}
                           className={`h-9 rounded-xl text-white text-sm font-semibold shadow ${color}`}
                         >
                           {label}
@@ -613,13 +622,13 @@ export default function MecoDockManager() {
           </Card>
         </div>
 
-        {/* Drawer lateral propio (sustituye al Sheet) */}
+        {/* Drawer lateral propio – usa fila VIVA por lado+rowId */}
         {dockPanel.open && (
           <>
             {/* Fondo */}
             <div
               className="fixed inset-0 bg-black/30 z-[60]"
-              onClick={() => setDockPanel({ open: false, dock: undefined, info: undefined })}
+              onClick={() => setDockPanel({ open: false, dock: undefined, lado: undefined, rowId: undefined })}
             />
             {/* Panel */}
             <div className="fixed right-0 top-0 h-screen w-[280px] sm:w-[320px] bg-white z-[70] shadow-2xl border-l">
@@ -628,22 +637,25 @@ export default function MecoDockManager() {
                 <Button
                   size="icon"
                   variant="ghost"
-                  onClick={() => setDockPanel({ open: false, dock: undefined, info: undefined })}
+                  onClick={() => setDockPanel({ open: false, dock: undefined, lado: undefined, rowId: undefined })}
                 >
                   <X className="w-5 h-5" />
                 </Button>
               </div>
               <div className="p-4 space-y-3 overflow-y-auto h-[calc(100vh-56px)]">
                 {(() => {
-                  const info = dockPanel.info;
-                  if (!info || !dockPanel.dock) return <div className="text-muted-foreground">Sin información.</div>;
-                  if (!info.row) return <div className="text-emerald-600 font-medium">Muelle libre</div>;
-                  const r = info.row;
+                  const { lado, rowId } = dockPanel;
+                  if (!lado || !rowId) return <div className="text-emerald-600 font-medium">Muelle libre</div>;
+                  // <<< FILA VIVA DESDE EL ESTADO >>>
+                  const liveRow = app.lados[lado]?.rows.find(r => r.id === rowId);
+                  if (!liveRow) return <div className="text-muted-foreground">No se encontró la fila.</div>;
+                  const r = liveRow;
+
                   return (
                     <div className="space-y-2">
                       <div className="flex items-center justify-between">
                         <div className="text-sm text-muted-foreground">Lado</div>
-                        <div className="font-medium">{info.lado}</div>
+                        <div className="font-medium">{lado}</div>
                       </div>
                       <div className="flex items-center justify-between">
                         <div className="text-sm text-muted-foreground">Matrícula</div>
@@ -663,7 +675,7 @@ export default function MecoDockManager() {
                           <Header title="Llegada real" />
                           <Input
                             value={(r["LLEGADA REAL"] ?? "").toString()}
-                            onChange={(e) => updateRow(info.lado, r.id, { "LLEGADA REAL": e.target.value })}
+                            onChange={(e) => updateRow(lado, r.id, { "LLEGADA REAL": e.target.value })}
                             placeholder="hh:mm / ISO"
                           />
                         </div>
@@ -671,7 +683,7 @@ export default function MecoDockManager() {
                           <Header title="Salida real" />
                           <Input
                             value={(r["SALIDA REAL"] ?? "").toString()}
-                            onChange={(e) => updateRow(info.lado, r.id, { "SALIDA REAL": e.target.value })}
+                            onChange={(e) => updateRow(lado, r.id, { "SALIDA REAL": e.target.value })}
                             placeholder="hh:mm / ISO"
                           />
                         </div>
@@ -682,7 +694,7 @@ export default function MecoDockManager() {
                           <Header title="Muelle" />
                           <Input
                             value={(r["MUELLE"] ?? "").toString()}
-                            onChange={(e) => updateRow(info.lado, r.id, { MUELLE: e.target.value })}
+                            onChange={(e) => updateRow(lado, r.id, { MUELLE: e.target.value })}
                             placeholder="nº muelle"
                           />
                           <div className="text-[10px] text-muted-foreground mt-0.5">* Se valida en la parrilla</div>
@@ -691,7 +703,7 @@ export default function MecoDockManager() {
                           <Header title="Precinto" />
                           <Input
                             value={(r["PRECINTO"] ?? "").toString()}
-                            onChange={(e) => updateRow(info.lado, r.id, { "PRECINTO": e.target.value })}
+                            onChange={(e) => updateRow(lado, r.id, { "PRECINTO": e.target.value })}
                             placeholder="Precinto"
                           />
                         </div>
@@ -702,7 +714,7 @@ export default function MecoDockManager() {
                           <Header title="Incidencias" />
                           <SelectNative
                             value={r["INCIDENCIAS"]}
-                            onChange={(v) => updateRow(info.lado, r.id, { "INCIDENCIAS": v })}
+                            onChange={(v) => updateRow(lado, r.id, { "INCIDENCIAS": v })}
                             options={INCIDENTES}
                           />
                         </div>
@@ -710,7 +722,7 @@ export default function MecoDockManager() {
                           <Header title="Estado" />
                           <SelectNative
                             value={r["ESTADO"]}
-                            onChange={(v) => updateRow(info.lado, r.id, { "ESTADO": v })}
+                            onChange={(v) => updateRow(lado, r.id, { "ESTADO": v })}
                             options={CAMION_ESTADOS}
                           />
                         </div>
@@ -720,7 +732,7 @@ export default function MecoDockManager() {
                         <Header title="Observaciones" />
                         <Input
                           value={(r.OBSERVACIONES ?? "").toString()}
-                          onChange={(e) => updateRow(info.lado, r.id, { OBSERVACIONES: e.target.value })}
+                          onChange={(e) => updateRow(lado, r.id, { OBSERVACIONES: e.target.value })}
                           placeholder="Añade notas"
                         />
                       </div>
