@@ -14,7 +14,7 @@ import { motion } from "framer-motion";
 
 /**
  * PLMECO – Gestión de Muelles (WEB) – JS
- * - Importa .xlsx con encabezados situados en la FILA 3.
+ * - Importa .xlsx con cabecera en la FILA 3 (1-index).
  * - Columnas base: Transportista, Matrícula, Destino, Llegada, Salida, Salida Tope, Observaciones.
  * - Extras editables: Muelle, Precinto, Llegada Real, Salida Real, Incidencias, Estado.
  * - 10 pestañas (Lado 0..9), vista de muelles (Verde/Amarillo/Rojo).
@@ -40,28 +40,32 @@ const INCIDENTES = [
 ];
 
 const CAMION_ESTADOS = [
-  { key: "OK", label: "OK", color: "bg-emerald-500" },
+  { key: "OK",       label: "OK",       color: "bg-emerald-500" },
   { key: "CARGANDO", label: "CARGANDO", color: "bg-amber-500" },
-  { key: "ANULADO", label: "ANULADO", color: "bg-red-600" },
+  { key: "ANULADO",  label: "ANULADO",  color: "bg-red-600" },
 ];
 
+// Aliases de cabeceras (normalizamos a las esperadas)
 const HEADER_ALIASES = {
   "transportista": "TRANSPORTISTA",
-  "transporte": "TRANSPORTISTA",
-  "carrier": "TRANSPORTISTA",
-  "matricula": "MATRICULA",
-  "matrícula": "MATRICULA",
-  "placa": "MATRICULA",
-  "destino": "DESTINO",
-  "llegada": "LLEGADA",
-  "entrada": "LLEGADA",
-  "salida": "SALIDA",
-  "salida tope": "SALIDA TOPE",
-  "cierre": "SALIDA TOPE",
+  "transporte":    "TRANSPORTISTA",
+  "carrier":       "TRANSPORTISTA",
+  "matricula":     "MATRICULA",
+  "matrícula":     "MATRICULA",
+  "placa":         "MATRICULA",
+  "destino":       "DESTINO",
+  "llegada":       "LLEGADA",
+  "entrada":       "LLEGADA",
+  "salida":        "SALIDA",
+  "salida tope":   "SALIDA TOPE",
+  "cierre":        "SALIDA TOPE",
   "observaciones": "OBSERVACIONES",
+  // Extras detectados en ejemplos
+  "ok":            "ESTADO",
+  "fuera":         "PRECINTO",
 };
 
-// Normaliza nombres de cabecera (case-insensitive, quita tildes)
+// Normaliza nombres (minúsculas + sin tildes)
 function norm(s) {
   return (s || "")
     .toLowerCase()
@@ -286,19 +290,20 @@ function importExcel(file, lado) {
     const wb = XLSX.read(data, { type: "array" });
     const ws = wb.Sheets[wb.SheetNames[0]];
 
-    // Usar FILA 3 como fila de headers (1-index), es decir, índice 2 (0-index)
+    // Usar FILA 3 como cabecera (1-index) → índice 2 (0-index)
     if (ws && ws["!ref"]) {
       const range = XLSX.utils.decode_range(ws["!ref"]);
-      range.s.r = 2; // empezar en fila 3
+      range.s.r = 2; // cabecera en fila 3
       ws["!ref"] = XLSX.utils.encode_range(range);
     }
 
-    // Leer a JSON usando esa fila como cabecera
+    // Pasar a JSON usando esa fila como headers
     const json = XLSX.utils.sheet_to_json(ws, {
-      defval: "",
-      raw: false,
+      defval: "",   // no perder celdas vacías
+      raw: false    // formatea a texto legible (p. ej. horas)
     });
 
+    // Construir filas normalizadas
     const rows = json.map((row) => {
       const mapped = {};
       Object.keys(row).forEach((k) => {
@@ -306,10 +311,10 @@ function importExcel(file, lado) {
         mapped[mk] = row[k];
       });
 
-      // Asegurar columnas esperadas
+      // Asegurar todas las columnas esperadas
       ALL_HEADERS.forEach((h) => { if (!(h in mapped)) mapped[h] = ""; });
 
-      // Normalizar MUELLE si viene
+      // Normalizar muelle si viene
       if (mapped["MUELLE"]) {
         const num = Number(String(mapped["MUELLE"]).trim());
         mapped["MUELLE"] = Number.isFinite(num) && DOCKS.includes(num) ? num : "";
@@ -321,6 +326,7 @@ function importExcel(file, lado) {
       return { id: crypto.randomUUID(), ...mapped };
     });
 
+    // Guardar en el lado seleccionado
     setApp((prev) => ({
       ...prev,
       lados: { ...prev.lados, [lado]: { ...prev.lados[lado], rows } },
@@ -425,54 +431,69 @@ function MecoDockManager() {
                 {LADOS.map((n) => (
                   <TabsContent key={n} value={n} className="mt-4">
                     <div className="border rounded-xl overflow-hidden">
-                      <div className="grid grid-cols-12 gap-px bg-slate-200">
-                        {ALL_HEADERS.map((h) => (
-                          <div key={h} className="col-span-2 bg-slate-50 p-2"><Header title={h} /></div>
-                        ))}
-                        <div className="col-span-1 bg-slate-50 p-2"><Header title="Acciones" /></div>
-                      </div>
-                      <ScrollArea className="h-[48vh]">
-                        {filteredRows(n).map((row) => (
-                          <div key={row.id} className="grid grid-cols-12 gap-px bg-slate-200">
-                            {ALL_HEADERS.map((h, idx) => {
-                              const isNumber = h === "MUELLE";
-                              const isEstado = h === "ESTADO";
-                              const isInc    = h === "INCIDENCIAS";
-                              const input = (
-                                <EditableCell
-                                  value={row[h]}
-                                  onChange={(v) => {
-                                    if (h === "MUELLE") {
-                                      const val = String(v).trim();
-                                      if (!val) return updateRow(n, row.id, { MUELLE: "" });
-                                      const num = Number(val);
-                                      if (!DOCKS.includes(num)) return;
-                                      return updateRow(n, row.id, { MUELLE: num });
-                                    }
-                                    if (h === "ESTADO")      return updateRow(n, row.id, { ESTADO: v });
-                                    if (h === "INCIDENCIAS") return updateRow(n, row.id, { INCIDENCIAS: v });
-                                    updateRow(n, row.id, { [h]: v });
-                                  }}
-                                  type={isNumber ? "number" : isEstado || isInc ? "select" : "text"}
-                                  options={
-                                    isEstado ? CAMION_ESTADOS.map((e) => e.key) :
-                                    isInc    ? INCIDENTES : undefined
-                                  }
-                                  className={`rounded-none border-0 bg-white ${idx % 2 ? "" : ""}`}
-                                />
-                              );
-                              return (
-                                <div key={h} className="col-span-2 bg-white p-1 flex items-center">{input}</div>
-                              );
-                            })}
-                            <div className="col-span-1 bg-white p-1 flex items-center justify-center">
-                              <Button size="icon" variant="ghost" onClick={() => removeRow(n, row.id)}>
-                                <X className="w-4 h-4" />
-                              </Button>
+                      <div className="overflow-x-auto">
+                        {/* Cabecera con columnas dinámicas */}
+                        <div
+                          className="grid bg-slate-200 min-w-[1400px]"
+                          style={{ gridTemplateColumns: `repeat(${ALL_HEADERS.length + 1}, minmax(10rem, 1fr))` }}
+                        >
+                          {ALL_HEADERS.map((h) => (
+                            <div key={h} className="bg-slate-50 p-2 border-r border-slate-200">
+                              <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">{h}</div>
                             </div>
+                          ))}
+                          <div className="bg-slate-50 p-2">
+                            <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">Acciones</div>
                           </div>
-                        ))}
-                      </ScrollArea>
+                        </div>
+
+                        {/* Filas */}
+                        <ScrollArea className="h-[48vh]">
+                          {filteredRows(n).map((row) => (
+                            <div
+                              key={row.id}
+                              className="grid bg-white border-t border-slate-200 min-w-[1400px]"
+                              style={{ gridTemplateColumns: `repeat(${ALL_HEADERS.length + 1}, minmax(10rem, 1fr))` }}
+                            >
+                              {ALL_HEADERS.map((h) => {
+                                const isNumber = h === "MUELLE";
+                                const isEstado = h === "ESTADO";
+                                const isInc    = h === "INCIDENCIAS";
+                                return (
+                                  <div key={h} className="p-1 border-r border-slate-100 flex items-center">
+                                    <EditableCell
+                                      value={row[h]}
+                                      onChange={(v) => {
+                                        if (h === "MUELLE") {
+                                          const val = String(v).trim();
+                                          if (!val) return updateRow(n, row.id, { MUELLE: "" });
+                                          const num = Number(val);
+                                          if (!DOCKS.includes(num)) return;
+                                          return updateRow(n, row.id, { MUELLE: num });
+                                        }
+                                        if (h === "ESTADO")      return updateRow(n, row.id, { ESTADO: v });
+                                        if (h === "INCIDENCIAS") return updateRow(n, row.id, { INCIDENCIAS: v });
+                                        updateRow(n, row.id, { [h]: v });
+                                      }}
+                                      type={isNumber ? "number" : isEstado || isInc ? "select" : "text"}
+                                      options={
+                                        isEstado ? CAMION_ESTADOS.map((e) => e.key) :
+                                        isInc    ? INCIDENTES : undefined
+                                      }
+                                      className="rounded-none border-0 bg-white"
+                                    />
+                                  </div>
+                                );
+                              })}
+                              <div className="p-1 flex items-center justify-center">
+                                <Button size="icon" variant="ghost" onClick={() => removeRow(n, row.id)}>
+                                  <X className="w-4 h-4" />
+                                </Button>
+                              </div>
+                            </div>
+                          ))}
+                        </ScrollArea>
+                      </div>
                     </div>
                   </TabsContent>
                 ))}
@@ -589,10 +610,10 @@ function MecoDockManager() {
   );
 }
 
-// Exportación por defecto (para que App.jsx pueda importarlo como default)
+// Exportación por defecto (para que App.jsx lo importe como default)
 export default MecoDockManager;
 
-// Utilidad local para exportar CSV (mantengo fuera del componente por limpieza)
+// Utilidad para exportar CSV del lado activo
 function exportCSV(lado, app) {
   const rows = app.lados[lado].rows;
   const headers = ALL_HEADERS;
