@@ -13,20 +13,18 @@ import * as XLSX from "xlsx";
 import { motion } from "framer-motion";
 
 /**
- * PLMECO – Gestión de Muelles (WEB) – Import XLSX robusto (cabecera con merges, saltos de línea, etc.)
- * - Autodetección de fila cabecera y hoja.
- * - Relleno de cabeceras combinadas (!merges).
- * - Limpieza de saltos de línea y espacios.
- * - Alias de cabeceras y validación de muelles.
- * - Panel de diagnóstico para ver qué se importó.
+ * PLMECO – Gestión de Muelles (WEB)
+ * - Importador XLSX robusto (autodetecta cabecera, soporta merges, limpia saltos).
+ * - PRECINTO visible y editable.
+ * - Todas las celdas importadas editables (ESTADO/INCIDENCIAS como select; MUELLE validado).
+ * - Autoajuste de ancho por contenido (según texto más largo de cada columna).
  */
 
-// --------------------------- Utilidades generales ---------------------------
+// --------------------------- Constantes generales ---------------------------
 const DOCKS = [
   312,313,314,315,316,317,318,319,320,321,322,323,324,325,326,327,328,329,330,331,332,333,334,335,336,337,
   351,352,353,354,355,356,357,359,360,361,362,363,364,365,366,367,368,369,
 ];
-
 const LADOS = Array.from({ length: 10 }, (_, i) => `Lado ${i}`);
 
 const INCIDENTES = [
@@ -36,37 +34,11 @@ const INCIDENTES = [
   "CAMION ANULADO",
   "CAMION NO APTO",
 ];
-
 const CAMION_ESTADOS = [
-  { key: "OK",       label: "OK",       color: "bg-emerald-500" },
-  { key: "CARGANDO", label: "CARGANDO", color: "bg-amber-500" },
-  { key: "ANULADO",  label: "ANULADO",  color: "bg-red-600" },
+  { key: "OK", label: "OK" },
+  { key: "CARGANDO", label: "CARGANDO" },
+  { key: "ANULADO", label: "ANULADO" },
 ];
-
-// Aliases de cabeceras (normalizamos a las esperadas)
-const HEADER_ALIASES = {
-  "transportista": "TRANSPORTISTA",
-  "transporte":    "TRANSPORTISTA",
-  "carrier":       "TRANSPORTISTA",
-  "matricula":     "MATRICULA",
-  "matrícula":     "MATRICULA",
-  "placa":         "MATRICULA",
-  "matricula vehiculo": "MATRICULA",
-  "matricula vehículo": "MATRICULA",
-  "destino":       "DESTINO",
-  "llegada":       "LLEGADA",
-  "hora llegada":  "LLEGADA",
-  "entrada":       "LLEGADA",
-  "salida":        "SALIDA",
-  "hora salida":   "SALIDA",
-  "salida tope":   "SALIDA TOPE",
-  "cierre":        "SALIDA TOPE",
-  "observaciones": "OBSERVACIONES",
-  "comentarios":   "OBSERVACIONES",
-  // Extras vistos en excels reales
-  "ok":            "ESTADO",
-  "fuera":         "PRECINTO",
-};
 
 const BASE_HEADERS = [
   "TRANSPORTISTA",
@@ -86,12 +58,34 @@ const EXTRA_HEADERS = [
   "ESTADO",
 ];
 const ALL_HEADERS = [...BASE_HEADERS, ...EXTRA_HEADERS];
+const EXPECTED_KEYS = [...ALL_HEADERS];
 
-const EXPECTED_KEYS = [
-  ...ALL_HEADERS
-];
+// Alias de cabeceras
+const HEADER_ALIASES = {
+  "transportista": "TRANSPORTISTA",
+  "transporte": "TRANSPORTISTA",
+  "carrier": "TRANSPORTISTA",
+  "matricula": "MATRICULA",
+  "matrícula": "MATRICULA",
+  "placa": "MATRICULA",
+  "matricula vehiculo": "MATRICULA",
+  "matricula vehículo": "MATRICULA",
+  "destino": "DESTINO",
+  "llegada": "LLEGADA",
+  "hora llegada": "LLEGADA",
+  "entrada": "LLEGADA",
+  "salida": "SALIDA",
+  "hora salida": "SALIDA",
+  "salida tope": "SALIDA TOPE",
+  "cierre": "SALIDA TOPE",
+  "observaciones": "OBSERVACIONES",
+  "comentarios": "OBSERVACIONES",
+  // extras que hemos visto
+  "ok": "ESTADO",
+  "fuera": "PRECINTO",
+};
 
-// Normaliza nombres (minúsculas + sin tildes) y limpia saltos de línea/espacios
+// --------------------------- Utilidades comunes -----------------------------
 function norm(s) {
   return (s ?? "")
     .toString()
@@ -119,6 +113,24 @@ function coerceCell(v) {
   if (v == null) return "";
   if (v instanceof Date) return v.toISOString();
   return String(v).replace(/\r?\n+/g, " ").replace(/\s{2,}/g, " ").trim();
+}
+
+// Autoajuste de ancho por contenido (ancho en "ch")
+function widthFromLen(len) {
+  // mínimo 10ch, máximo 40ch; 0.7ch por carácter + 3ch margen
+  const ch = Math.min(Math.max(len * 0.7 + 3, 10), 40);
+  return `${Math.round(ch)}ch`;
+}
+function computeColumnTemplate(rows) {
+  const widths = ALL_HEADERS.map((h) => {
+    const maxLen = Math.max(
+      (h || "").length,
+      ...rows.map(r => ((r?.[h] ?? "") + "").length)
+    );
+    return widthFromLen(maxLen);
+  });
+  // Acciones fija 8rem
+  return `${widths.join(" ")} 8rem`;
 }
 
 // ---------------------------- Persistencia local ----------------------------
@@ -247,17 +259,16 @@ function Header({ title }) {
   );
 }
 
-// ------------------------------ Importador XLSX robusto ---------------------
+// ------------------------------ Importador XLSX -----------------------------
 function expandHeaderMerges(ws, headerRowIdx) {
-  // Si la hoja tiene merges, propagamos el texto de la celda de origen a todo el rango
+  // Propagar texto de celdas combinadas (merges) sobre la fila de cabecera
   const merges = ws["!merges"] || [];
   merges.forEach((m) => {
-    // Solo nos importa si el merge toca la fila de cabecera
     if (m.s.r <= headerRowIdx && m.e.r >= headerRowIdx) {
-      const srcCellAddr = XLSX.utils.encode_cell({ r: m.s.r, c: m.s.c });
-      const srcCell = ws[srcCellAddr];
-      if (!srcCell || !srcCell.v) return;
-      const text = coerceCell(srcCell.v);
+      const srcAddr = XLSX.utils.encode_cell({ r: m.s.r, c: m.s.c });
+      const src = ws[srcAddr];
+      if (!src || !src.v) return;
+      const text = coerceCell(src.v);
       for (let c = m.s.c; c <= m.e.c; c++) {
         const addr = XLSX.utils.encode_cell({ r: headerRowIdx, c });
         const cell = ws[addr] || (ws[addr] = {});
@@ -269,22 +280,22 @@ function expandHeaderMerges(ws, headerRowIdx) {
 }
 
 function tryParseSheet(ws, sheetName) {
-  // Primero, scan como matriz para detectar cabecera
+  // 1) Leer como matriz para detectar cabecera
   const rows2D = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
 
-  // Map header candidates y escoger la mejor fila
-  let headerRowIdx = -1, bestScore = -1, bestIdxLimit = Math.min(rows2D.length, 40);
-  for (let r = 0; r < bestIdxLimit; r++) {
+  // 2) Elegir fila cabecera con mayor score
+  let headerRowIdx = -1, bestScore = -1, limit = Math.min(rows2D.length, 40);
+  for (let r = 0; r < limit; r++) {
     const mapped = (rows2D[r] || []).map((h) => mapHeader(h));
     const score = mapped.reduce((acc, h) => acc + (EXPECTED_KEYS.includes(h) ? 1 : 0), 0);
     if (score > bestScore) { bestScore = score; headerRowIdx = r; }
   }
   if (headerRowIdx < 0) headerRowIdx = 0;
 
-  // Propagar merges en la fila cabecera para que sheet_to_json coja textos correctos
+  // 3) Expandir merges en fila cabecera
   expandHeaderMerges(ws, headerRowIdx);
 
-  // Ajustar !ref para que empiece en la fila de cabecera
+  // 4) Ajustar rango para empezar en cabecera
   let ws2 = ws;
   if (ws["!ref"]) {
     const range = XLSX.utils.decode_range(ws["!ref"]);
@@ -292,12 +303,11 @@ function tryParseSheet(ws, sheetName) {
     ws2 = { ...ws, "!ref": XLSX.utils.encode_range(range) };
   }
 
-  // Ahora a JSON por filas, usando esa cabecera
+  // 5) JSON con esa cabecera
   const json = XLSX.utils.sheet_to_json(ws2, { defval: "", raw: false });
   const rows = [];
   const seenHeaders = new Set();
 
-  // Construir filas normalizadas
   json.forEach((row) => {
     const obj = {};
     Object.keys(row).forEach((kRaw) => {
@@ -305,11 +315,10 @@ function tryParseSheet(ws, sheetName) {
       seenHeaders.add(k);
       obj[k] = coerceCell(row[kRaw]);
     });
-
-    // Rellenar claves esperadas ausentes
+    // Rellenar claves esperadas
     for (const h of EXPECTED_KEYS) if (!(h in obj)) obj[h] = "";
 
-    // Filtrar filas totalmente vacías en columnas clave
+    // Descartar filas totalmente vacías en campos clave
     const keysMin = ["TRANSPORTISTA","MATRICULA","DESTINO","LLEGADA","SALIDA","OBSERVACIONES"];
     const allEmpty = keysMin.every(k => String(obj[k] || "").trim() === "");
     if (allEmpty) return;
@@ -325,13 +334,7 @@ function tryParseSheet(ws, sheetName) {
     rows.push({ id: crypto.randomUUID(), ...obj });
   });
 
-  return {
-    sheetName,
-    headerRowIdx,
-    bestScore,
-    headers: Array.from(seenHeaders),
-    rows
-  };
+  return { sheetName, headerRowIdx, bestScore, headers: Array.from(seenHeaders), rows };
 }
 
 // ------------------------------- Componente App -----------------------------
@@ -343,8 +346,6 @@ export default function MecoDockManager() {
   const [filterEstado, setFilterEstado] = useState("TODOS");
   const [clock, setClock] = useState(nowISO());
   const [dockPanel, setDockPanel] = useState({ open: false, dock: undefined, info: undefined });
-
-  // Diagnóstico
   const [debugOpen, setDebugOpen] = useState(false);
   const [importInfo, setImportInfo] = useState(null);
 
@@ -380,7 +381,7 @@ export default function MecoDockManager() {
     setApp((prev) => ({ ...prev, lados: { ...prev.lados, [lado]: { ...prev.lados[lado], rows: [] } } }));
   }
 
-  // -------- Importar Excel: recorre TODAS las hojas y elige la mejor --------
+  // -------------------------- Importar Excel (todas hojas) -------------------
   function importExcel(file, lado) {
     const reader = new FileReader();
     reader.onload = (e) => {
@@ -396,7 +397,6 @@ export default function MecoDockManager() {
           results.push(parsed);
         }
 
-        // Elegimos la hoja con más filas útiles (si empate, la que tenga mayor score de cabecera)
         results.sort((a, b) => {
           if (b.rows.length !== a.rows.length) return b.rows.length - a.rows.length;
           return b.bestScore - a.bestScore;
@@ -427,7 +427,7 @@ export default function MecoDockManager() {
         }));
 
         if (!rows.length) {
-          alert("No se han detectado filas con datos. Revisa que el Excel tenga una fila de cabeceras reconocible y datos debajo.");
+          alert("No se han detectado filas con datos. Revisa que el Excel tenga cabeceras reconocibles y datos debajo.");
         }
       } catch (err) {
         console.error(err);
@@ -485,7 +485,7 @@ export default function MecoDockManager() {
                       <ul className="list-disc pl-5 space-y-1">
                         {importInfo.sheetsTried.map((it, idx) => (
                           <li key={idx}>
-                            <span className="font-mono">{it.sheet}</span> · cabecera en fila <b>{it.headerRowIdx+1}</b> · score <b>{it.bestScore}</b> · columnas detectadas: <span className="font-mono">{(it.headers||[]).join(", ")}</span> · filas: <b>{it.rows}</b>
+                            <span className="font-mono">{it.sheet}</span> · cabecera en fila <b>{it.headerRowIdx+1}</b> · score <b>{it.bestScore}</b> · columnas: <span className="font-mono">{(it.headers||[]).join(", ")}</span> · filas: <b>{it.rows}</b>
                           </li>
                         ))}
                       </ul>
@@ -523,10 +523,10 @@ export default function MecoDockManager() {
                   <TabsContent key={n} value={n} className="mt-4">
                     <div className="border rounded-xl overflow-hidden">
                       <div className="overflow-x-auto">
-                        {/* Cabecera con columnas dinámicas */}
+                        {/* Cabecera autoajustada */}
                         <div
-                          className="grid bg-slate-200 min-w-[1400px]"
-                          style={{ gridTemplateColumns: `repeat(${ALL_HEADERS.length + 1}, minmax(10rem, 1fr))` }}
+                          className="grid bg-slate-200"
+                          style={{ gridTemplateColumns: computeColumnTemplate(app.lados[n].rows) }}
                         >
                           {ALL_HEADERS.map((h) => (
                             <div key={h} className="bg-slate-50 p-2 border-r border-slate-200">
@@ -538,13 +538,13 @@ export default function MecoDockManager() {
                           </div>
                         </div>
 
-                        {/* Filas */}
+                        {/* Filas autoajustadas */}
                         <ScrollArea className="h-[48vh]">
                           {filteredRows(n).map((row) => (
                             <div
                               key={row.id}
-                              className="grid bg-white border-t border-slate-200 min-w-[1400px]"
-                              style={{ gridTemplateColumns: `repeat(${ALL_HEADERS.length + 1}, minmax(10rem, 1fr))` }}
+                              className="grid bg-white border-t border-slate-200"
+                              style={{ gridTemplateColumns: computeColumnTemplate(app.lados[n].rows) }}
                             >
                               {ALL_HEADERS.map((h) => {
                                 const isNumber = h === "MUELLE";
@@ -555,15 +555,17 @@ export default function MecoDockManager() {
                                     <EditableCell
                                       value={row[h]}
                                       onChange={(v) => {
+                                        // TODO: todas las columnas son editables; MUELLE validado
                                         if (h === "MUELLE") {
                                           const val = String(v).trim();
                                           if (!val) return updateRow(n, row.id, { MUELLE: "" });
                                           const num = Number(val);
-                                          if (!DOCKS.includes(num)) return;
+                                          if (!DOCKS.includes(num)) return; // evita muelle no permitido
                                           return updateRow(n, row.id, { MUELLE: num });
                                         }
                                         if (h === "ESTADO")      return updateRow(n, row.id, { ESTADO: v });
                                         if (h === "INCIDENCIAS") return updateRow(n, row.id, { INCIDENCIAS: v });
+                                        // el resto (incluye PRECINTO) editable texto
                                         updateRow(n, row.id, { [h]: v });
                                       }}
                                       type={isNumber ? "number" : isEstado || isInc ? "select" : "text"}
@@ -701,7 +703,7 @@ export default function MecoDockManager() {
   );
 }
 
-// ------------------------------ Toolbar (usa import reforzado) --------------
+// ------------------------------ Toolbar -------------------------------------
 function ToolbarX({
   onImport, onAddRow, onClear, filterEstado, setFilterEstado, onExport,
 }) {
@@ -749,7 +751,7 @@ function ToolbarX({
   );
 }
 
-// ----------------------------- Exportar CSV utilidad ------------------------
+// ----------------------------- Exportar CSV ---------------------------------
 function exportCSV(lado, app) {
   const rows = app.lados[lado].rows;
   const headers = ALL_HEADERS;
