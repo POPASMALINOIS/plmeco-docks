@@ -10,10 +10,10 @@ import { motion } from "framer-motion";
 
 /**
  * PLMECO – Gestión de Muelles (WEB)
- * Cambios de esta versión:
- * - Reordenación de columnas en la tabla principal para ver juntas:
- *   TRANSPORTISTA · DESTINO · MUELLE · PRECINTO · LLEGADA REAL · SALIDA REAL
- * - Resto de mejoras se mantienen (drawer propio, selects nativos, etc.).
+ * Esta versión añade:
+ * - Reordenación de columnas por drag&drop en los encabezados.
+ * - Persistencia del orden en localStorage ("meco-colorder").
+ * - Exportación CSV usa el orden actual.
  */
 
 // --------------------------- Constantes generales ---------------------------
@@ -53,20 +53,16 @@ const EXTRA_HEADERS = [
   "ESTADO",
 ];
 
-/**
- * ORDEN VISUAL DE LA TABLA PRINCIPAL
- * (puedes ajustar fácilmente tocando este array)
- */
-const ALL_HEADERS = [
-  // Grupo solicitado, juntos al inicio:
+// Orden por defecto (visible)
+const DEFAULT_ORDER = [
+  // Grupo solicitado primero:
   "TRANSPORTISTA",
   "DESTINO",
   "MUELLE",
   "PRECINTO",
   "LLEGADA REAL",
   "SALIDA REAL",
-
-  // Resto de columnas:
+  // Resto:
   "MATRICULA",
   "LLEGADA",
   "SALIDA",
@@ -76,7 +72,6 @@ const ALL_HEADERS = [
   "ESTADO",
 ];
 
-// Para parsing/validación esperamos todas:
 const EXPECTED_KEYS = [...new Set([...BASE_HEADERS, ...EXTRA_HEADERS])];
 
 // Alias de cabeceras (normalización)
@@ -136,8 +131,8 @@ function widthFromLen(len) {
   const ch = Math.min(Math.max(len * 0.7 + 3, 10), 56);
   return `${Math.round(ch)}ch`;
 }
-function computeColumnTemplate(rows) {
-  const widths = ALL_HEADERS.map((h) => {
+function computeColumnTemplate(rows, order) {
+  const widths = order.map((h) => {
     const maxLen = Math.max(
       (h || "").length,
       ...rows.map(r => ((r?.[h] ?? "") + "").length)
@@ -233,8 +228,16 @@ export default function MecoDockManager() {
   const [debugOpen, setDebugOpen] = useState(false);
   const [importInfo, setImportInfo] = useState(null);
 
+  // <<< Orden de columnas con persistencia >>>
+  const [columnOrder, setColumnOrder] = useLocalStorage("meco-colorder", DEFAULT_ORDER);
+
+  // DnD estado
+  const dragInfoRef = useRef({ from: null, to: null });
+  const [draggingKey, setDraggingKey] = useState(null);
+
   useRealtimeSync(app, setApp);
   useEffect(() => { const t = setInterval(() => setClock(nowISO()), 1000); return () => clearInterval(t); }, []);
+
   const docks = useMemo(() => deriveDocks(app.lados), [app]);
 
   function updateRow(lado, id, patch) {
@@ -347,14 +350,45 @@ export default function MecoDockManager() {
     return list.filter((r) => (r.ESTADO || "OK") === filterEstado);
   }
 
-  const legend = (
-    <div className="flex items-center gap-3 text-[11px] text-muted-foreground">
-      <div className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded bg-emerald-500" /> Libre</div>
-      <div className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded bg-amber-500" /> Espera</div>
-      <div className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded bg-red-600" /> Ocupado</div>
-    </div>
-  );
+  // --------------------------- DnD Handlers (HTML5) -------------------------
+  function onHeaderDragStart(e, key) {
+    setDraggingKey(key);
+    dragInfoRef.current.from = key;
+    e.dataTransfer.setData("text/plain", key);
+    e.dataTransfer.effectAllowed = "move";
+  }
+  function onHeaderDragOver(e, overKey) {
+    e.preventDefault();
+    dragInfoRef.current.to = overKey;
+  }
+  function onHeaderDrop(e, dropKey) {
+    e.preventDefault();
+    const fromKey = dragInfoRef.current.from;
+    const toKey   = dropKey || dragInfoRef.current.to;
+    if (!fromKey || !toKey || fromKey === toKey) {
+      setDraggingKey(null);
+      dragInfoRef.current = { from: null, to: null };
+      return;
+    }
+    const newOrder = reorder(columnOrder, fromKey, toKey);
+    setColumnOrder(newOrder);
+    setDraggingKey(null);
+    dragInfoRef.current = { from: null, to: null };
+  }
+  function onHeaderDragEnd() {
+    setDraggingKey(null);
+    dragInfoRef.current = { from: null, to: null };
+  }
+  function reorder(order, fromKey, toKey) {
+    const arr = order.slice();
+    const fromIdx = arr.indexOf(fromKey);
+    const toIdx = arr.indexOf(toKey);
+    if (fromIdx === -1 || toIdx === -1) return order;
+    arr.splice(toIdx, 0, arr.splice(fromIdx, 1)[0]);
+    return arr;
+  }
 
+  // --------------------------- Render ---------------------------------------
   return (
     <TooltipProvider>
       <div className="w-full min-h-screen p-3 md:p-5 bg-gradient-to-b from-slate-50 to-white">
@@ -373,9 +407,14 @@ export default function MecoDockManager() {
             <CardHeader className="pb-2">
               <div className="flex items-center justify-between">
                 <CardTitle>Operativas por lado</CardTitle>
-                <Button size="sm" variant="outline" onClick={() => setDebugOpen(v => !v)}>
-                  {debugOpen ? "Ocultar diagnóstico" : "Ver diagnóstico de importación"}
-                </Button>
+                <div className="flex items-center gap-2">
+                  <Button size="sm" variant="outline" onClick={() => setColumnOrder(DEFAULT_ORDER)}>
+                    Restablecer orden
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={() => setDebugOpen(v => !v)}>
+                    {debugOpen ? "Ocultar diagnóstico" : "Ver diagnóstico de importación"}
+                  </Button>
+                </div>
               </div>
             </CardHeader>
             <CardContent>
@@ -419,33 +458,40 @@ export default function MecoDockManager() {
                     onClear={() => clearLado(active)}
                     filterEstado={filterEstado}
                     setFilterEstado={setFilterEstado}
-                    onExport={() => exportCSV(active, app)}
+                    onExport={() => exportCSV(active, app, columnOrder)}
                   />
                 </div>
 
                 {LADOS.map((n) => {
                   const rows = app.lados[n].rows;
-                  const gridTemplate = computeColumnTemplate(rows);
+                  const gridTemplate = computeColumnTemplate(rows, columnOrder);
                   return (
                     <TabsContent key={n} value={n} className="mt-3">
                       <div className="border rounded-xl overflow-hidden">
                         <div className="overflow-auto max-h-[84vh]">
-                          {/* Header sticky */}
-                          <div className="grid bg-slate-200 sticky top-0 z-10" style={{ gridTemplateColumns: gridTemplate }}>
-                            {ALL_HEADERS.map((h) => (
-                              <div key={h} className="bg-slate-50 p-2 border-r border-slate-200">
-                                <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">{h}</div>
-                              </div>
+                          {/* Header sticky con drag&drop */}
+                          <div className="grid bg-slate-200 sticky top-0 z-10 select-none" style={{ gridTemplateColumns: gridTemplate }}>
+                            {columnOrder.map((h) => (
+                              <HeaderCell
+                                key={h}
+                                title={h}
+                                dragging={draggingKey === h}
+                                onDragStart={(e) => onHeaderDragStart(e, h)}
+                                onDragOver={(e) => onHeaderDragOver(e, h)}
+                                onDrop={(e) => onHeaderDrop(e, h)}
+                                onDragEnd={onHeaderDragEnd}
+                              />
                             ))}
                             <div className="bg-slate-50 p-2">
                               <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">Acciones</div>
                             </div>
                           </div>
+
                           {/* Filas */}
                           <div>
                             {filteredRows(n).map((row) => (
                               <div key={row.id} className="grid bg-white border-t border-slate-200" style={{ gridTemplateColumns: gridTemplate }}>
-                                {ALL_HEADERS.map((h) => {
+                                {columnOrder.map((h) => {
                                   const isEstado = h === "ESTADO";
                                   const isInc    = h === "INCIDENCIAS";
                                   return (
@@ -663,6 +709,25 @@ function DockDrawer({ app, dockPanel, setDockPanel, updateRow }) {
   );
 }
 
+// ------------------------------ Subcomponentes UI ---------------------------
+function HeaderCell({ title, dragging, onDragStart, onDragOver, onDrop, onDragEnd }) {
+  return (
+    <div
+      className={`bg-slate-50 p-2 border-r border-slate-200 cursor-grab ${dragging ? "opacity-60 ring-2 ring-sky-400" : ""}`}
+      draggable
+      onDragStart={onDragStart}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+      onDragEnd={onDragEnd}
+      title="Arrastra para reordenar"
+    >
+      <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide flex items-center gap-2">
+        <span className="inline-block select-none">⋮⋮</span>
+        {title}
+      </div>
+    </div>
+  );
+}
 function KV({ label, value, maxw }) {
   return (
     <div className="flex items-center justify-between">
@@ -744,8 +809,8 @@ function ToolbarX({ onImport, onAddRow, onClear, filterEstado, setFilterEstado, 
   );
 }
 
-function exportCSV(lado, app) {
-  const headers = ALL_HEADERS;
+function exportCSV(lado, app, columnOrder) {
+  const headers = columnOrder;
   const rows = app.lados[lado].rows;
   const csv = [headers.join(",")]
     .concat(rows.map((r) => headers.map((h) => (r[h] ?? "")).join(",")))
