@@ -14,13 +14,8 @@ import { motion } from "framer-motion";
 
 /**
  * PLMECO – Gestión de Muelles (WEB) – JS
- * - Importa .xlsx con cabecera AUTODETECTADA (no asume fila 3).
- * - Columnas base: Transportista, Matrícula, Destino, Llegada, Salida, Salida Tope, Observaciones.
- * - Extras editables: Muelle, Precinto, Llegada Real, Salida Real, Incidencias, Estado.
- * - 10 pestañas (Lado 0..9), vista de muelles (Verde/Amarillo/Rojo).
- * - Click en muelle: panel lateral con Matrícula/Destino/Estado y edición rápida.
- * - Filtro por estado: OK, CARGANDO, ANULADO.
- * - Persistencia localStorage + sync entre pestañas (BroadcastChannel) y opcional WebSocket (window.MECO_WS_URL).
+ * Importador: autodetecta hoja y fila de cabecera, muestra diagnóstico y aplica varios
+ * métodos de parseo si el principal no devuelve datos.
  */
 
 // --------------------------- Utilidades generales ---------------------------
@@ -60,14 +55,34 @@ const HEADER_ALIASES = {
   "salida tope":   "SALIDA TOPE",
   "cierre":        "SALIDA TOPE",
   "observaciones": "OBSERVACIONES",
-  // Extras vistos en tus excels
+  // Extras vistos en excels reales
   "ok":            "ESTADO",
   "fuera":         "PRECINTO",
+  "comentarios":   "OBSERVACIONES",
 };
 
-// Normaliza nombres (minúsculas + sin tildes)
+const BASE_HEADERS = [
+  "TRANSPORTISTA",
+  "MATRICULA",
+  "DESTINO",
+  "LLEGADA",
+  "SALIDA",
+  "SALIDA TOPE",
+  "OBSERVACIONES",
+];
+const EXTRA_HEADERS = [
+  "MUELLE",
+  "PRECINTO",
+  "LLEGADA REAL",
+  "SALIDA REAL",
+  "INCIDENCIAS",
+  "ESTADO",
+];
+const ALL_HEADERS = [...BASE_HEADERS, ...EXTRA_HEADERS];
+
 function norm(s) {
-  return (s || "")
+  return (s ?? "")
+    .toString()
     .toLowerCase()
     .normalize("NFD")
     .replace(/\p{Diacritic}/gu, "")
@@ -75,7 +90,7 @@ function norm(s) {
 }
 function mapHeader(name) {
   const n = norm(name);
-  return HEADER_ALIASES[n] || (name || "").toUpperCase();
+  return HEADER_ALIASES[n] || (name ?? "").toString().toUpperCase();
 }
 function nowISO() {
   const d = new Date();
@@ -124,9 +139,7 @@ function useRealtimeSync(state, setState) {
     if (!url) return;
     const ws = new WebSocket(url);
     wsRef.current = ws;
-    ws.onopen = () => {
-      try { ws.send(JSON.stringify({ type: "HELLO", role: "client" })); } catch {}
-    };
+    ws.onopen = () => { try { ws.send(JSON.stringify({ type: "HELLO", role: "client" })); } catch {} };
     ws.onmessage = (e) => {
       try {
         const msg = JSON.parse(e.data);
@@ -137,8 +150,8 @@ function useRealtimeSync(state, setState) {
   }, [setState]);
 
   useEffect(() => {
-    try { bcRef.current && bcRef.current.postMessage({ type: "APP_STATE", payload: state }); } catch {}
-    try { wsRef.current && wsRef.current.send(JSON.stringify({ type: "APP_STATE", payload: state })); } catch {}
+    try { bcRef.current?.postMessage({ type: "APP_STATE", payload: state }); } catch {}
+    try { wsRef.current?.send(JSON.stringify({ type: "APP_STATE", payload: state })); } catch {}
   }, [state]);
 }
 
@@ -182,25 +195,6 @@ function estadoBadgeColor(estado) {
 }
 
 // ------------------------------- Tabla editable ----------------------------
-const BASE_HEADERS = [
-  "TRANSPORTISTA",
-  "MATRICULA",
-  "DESTINO",
-  "LLEGADA",
-  "SALIDA",
-  "SALIDA TOPE",
-  "OBSERVACIONES",
-];
-const EXTRA_HEADERS = [
-  "MUELLE",
-  "PRECINTO",
-  "LLEGADA REAL",
-  "SALIDA REAL",
-  "INCIDENCIAS",
-  "ESTADO",
-];
-const ALL_HEADERS = [...BASE_HEADERS, ...EXTRA_HEADERS];
-
 function EditableCell({ value, onChange, type = "text", className = "", options }) {
   if (type === "select" && options) {
     return (
@@ -234,159 +228,99 @@ function Header({ title }) {
   );
 }
 
-function Toolbar({
-  onImport, onAddRow, onClear, filterEstado, setFilterEstado, onExport,
-}) {
-  const fileRef = useRef(null);
-  return (
-    <div className="flex items-center gap-2 flex-wrap">
-      <input
-        ref={fileRef}
-        type="file"
-        accept=".xlsx,.xls"
-        className="hidden"
-        onChange={(e) => {
-          const f = e.target.files && e.target.files[0];
-          if (f) onImport(f);
-          if (fileRef.current) fileRef.current.value = "";
-        }}
-      />
-      <Button size="sm" variant="secondary" onClick={() => fileRef.current && fileRef.current.click()}>
-        <FileUp className="mr-2 h-4 w-4" /> Importar Excel
-      </Button>
-      <Button size="sm" onClick={onExport}>
-        <Download className="mr-2 h-4 w-4" /> Exportar CSV
-      </Button>
-      <Button size="sm" variant="outline" onClick={onAddRow}>
-        <Plus className="mr-2 h-4 w-4" /> Nueva fila
-      </Button>
-      <Button size="sm" variant="destructive" onClick={onClear}>
-        <Trash2 className="mr-2 h-4 w-4" /> Vaciar lado
-      </Button>
-      <div className="ml-auto flex items-center gap-2">
-        <span className="text-sm text-muted-foreground">Filtrar estado</span>
-        <Select value={filterEstado} onValueChange={setFilterEstado}>
-          <SelectTrigger className="h-8 w-[160px]">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="TODOS">Todos</SelectItem>
-            {CAMION_ESTADOS.map((e) => (
-              <SelectItem key={e.key} value={e.key}>{e.label}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
-    </div>
-  );
+// ------------------------------ Importador XLSX -----------------------------
+const EXPECTED_KEYS = [
+  "TRANSPORTISTA","MATRICULA","DESTINO","LLEGADA","SALIDA","SALIDA TOPE","OBSERVACIONES",
+  "MUELLE","PRECINTO","LLEGADA REAL","SALIDA REAL","INCIDENCIAS","ESTADO"
+];
+
+function coerceCell(v) {
+  if (v == null) return "";
+  // Si es fecha de Excel (número), XLSX normalmente ya lo devuelve formateado con raw:false.
+  // Aseguramos string “limpio”:
+  if (v instanceof Date) return v.toISOString();
+  return String(v).trim();
 }
 
-// ---------------------- Importar Excel (AUTODETECT CABECERA) ----------------
-function importExcel(file, lado) {
-  const reader = new FileReader();
+function tryParseSheet(ws, sheetName) {
+  // 1) Leer como matriz para inspección
+  const rows2D = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
 
-  reader.onload = (e) => {
-    const data = new Uint8Array(e.target.result);
-    const wb = XLSX.read(data, { type: "array" });
-    const ws = wb.Sheets[wb.SheetNames[0]];
-    if (!ws) return;
-
-    // 1) Leemos como MATRIZ (header:1) para inspeccionar filas sin suponer cuál es la cabecera
-    const rows2D = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
-
-    // 2) Autodetectar la fila de cabecera buscando la que más encaje con estas claves
-    const EXPECTED_KEYS = [
-      "TRANSPORTISTA","MATRICULA","DESTINO","LLEGADA","SALIDA","SALIDA TOPE","OBSERVACIONES",
-      "MUELLE","PRECINTO","LLEGADA REAL","SALIDA REAL","INCIDENCIAS","ESTADO"
-    ];
-
-    // Normalizador y alias “sueltos”
-    function norm2(s) {
-      return (s || "").toString().toLowerCase().normalize("NFD").replace(/\p{Diacritic}/gu, "").trim();
-    }
-    const HEADER_ALIASES_EXTRA = {
-      ...HEADER_ALIASES,
-      // por si hay más variantes
-      "matricula vehiculo": "MATRICULA",
-      "matricula vehículo": "MATRICULA",
-      "hora llegada": "LLEGADA",
-      "hora salida": "SALIDA",
-    };
-    function mapHeaderLoose(name) {
-      const n = norm2(name);
-      return HEADER_ALIASES_EXTRA[n] || (name || "").toString().toUpperCase();
-    }
-
-    let headerRowIdx = -1;
-    let bestScore = -1;
-    const scanLimit = Math.min(rows2D.length, 12); // miramos primeras 12 filas
-    for (let r = 0; r < scanLimit; r++) {
-      const row = rows2D[r] || [];
-      const mapped = row.map(mapHeaderLoose);
-      const score = mapped.reduce((acc, h) => acc + (EXPECTED_KEYS.includes(h) ? 1 : 0), 0);
-      if (score > bestScore) { bestScore = score; headerRowIdx = r; }
-    }
-    if (headerRowIdx < 0) headerRowIdx = 0;
-
-    const rawHeaders = (rows2D[headerRowIdx] || []).map((h) => (h ?? "").toString());
-    const headers = rawHeaders.map(mapHeaderLoose);
-
-    // 3) Construimos objetos a partir de la fila siguiente a la cabecera
-    const dataRows = rows2D.slice(headerRowIdx + 1);
-
-    const rows = [];
-    for (const arr of dataRows) {
-      const obj = {};
-      for (let c = 0; c < headers.length; c++) {
-        const key = headers[c];
-        if (!key) continue;
-        obj[key] = (arr && arr[c] != null) ? arr[c] : "";
-      }
-
-      // Asegurar todas las columnas esperadas
-      for (const h of EXPECTED_KEYS) if (!(h in obj)) obj[h] = "";
-
-      // Filtrar filas totalmente vacías (en columnas clave)
-      const keyFields = ["TRANSPORTISTA","MATRICULA","DESTINO","LLEGADA","SALIDA","OBSERVACIONES"];
-      const allEmpty = keyFields.every(k => String(obj[k] || "").trim() === "");
-      if (allEmpty) continue;
-
-      // Normalizar MUELLE si viene
-      if (obj["MUELLE"] !== "") {
-        const num = Number(String(obj["MUELLE"]).trim());
-        obj["MUELLE"] = Number.isFinite(num) && DOCKS.includes(num) ? num : "";
-      }
-
-      // Estado por defecto
-      if (!obj["ESTADO"]) obj["ESTADO"] = "OK";
-
-      rows.push({ id: crypto.randomUUID(), ...obj });
-    }
-
-    // 4) Persistir en el lado elegido
-    setApp((prev) => ({
-      ...prev,
-      lados: { ...prev.lados, [lado]: { ...prev.lados[lado], rows } },
-    }));
-
-    if (!rows.length) {
-      alert("No se han detectado filas con datos tras la cabecera. Revisa que el Excel tenga contenido debajo de la fila de cabeceras.");
-    }
+  // 2) Buscar la fila que más coincide con nuestras cabeceras
+  const HEADER_ALIASES_EXTRA = { ...HEADER_ALIASES,
+    "matricula vehiculo": "MATRICULA",
+    "matricula vehículo": "MATRICULA",
+    "hora llegada": "LLEGADA",
+    "hora salida": "SALIDA",
+  };
+  const mapHeaderLoose = (name) => {
+    const n = norm(name);
+    return HEADER_ALIASES_EXTRA[n] || (name ?? "").toString().toUpperCase();
   };
 
-  reader.readAsArrayBuffer(file);
+  let headerRowIdx = -1, bestScore = -1;
+  const scanLimit = Math.min(rows2D.length, 30);
+  for (let r = 0; r < scanLimit; r++) {
+    const mapped = (rows2D[r] || []).map(mapHeaderLoose);
+    const score = mapped.reduce((acc, h) => acc + (EXPECTED_KEYS.includes(h) ? 1 : 0), 0);
+    if (score > bestScore) { bestScore = score; headerRowIdx = r; }
+  }
+  if (headerRowIdx < 0) headerRowIdx = 0;
+
+  const rawHeaders = (rows2D[headerRowIdx] || []).map((h) => (h ?? "").toString());
+  const headers = rawHeaders.map(mapHeaderLoose);
+
+  // 3) Construir objetos desde la fila siguiente
+  const dataRows = rows2D.slice(headerRowIdx + 1);
+  const out = [];
+
+  for (const arr of dataRows) {
+    const obj = {};
+    for (let c = 0; c < headers.length; c++) {
+      const key = headers[c];
+      if (!key) continue;
+      obj[key] = coerceCell(arr?.[c] ?? "");
+    }
+    // Rellenar claves esperadas
+    for (const h of EXPECTED_KEYS) if (!(h in obj)) obj[h] = "";
+
+    // Filtrar filas totalmente vacías (en columnas clave)
+    const keysMin = ["TRANSPORTISTA","MATRICULA","DESTINO","LLEGADA","SALIDA","OBSERVACIONES"];
+    const allEmpty = keysMin.every(k => String(obj[k] || "").trim() === "");
+    if (allEmpty) continue;
+
+    // Normalizar MUELLE si viene
+    if (obj["MUELLE"] !== "") {
+      const num = Number(String(obj["MUELLE"]).trim());
+      obj["MUELLE"] = Number.isFinite(num) && DOCKS.includes(num) ? num : "";
+    }
+    // Estado por defecto
+    if (!obj["ESTADO"]) obj["ESTADO"] = "OK";
+
+    out.push({ id: crypto.randomUUID(), ...obj });
+  }
+
+  return {
+    sheetName,
+    headerRowIdx,
+    headers,
+    bestScore,
+    rows: out,
+    totalRows2D: rows2D.length,
+  };
 }
 
 // ------------------------------- Componente App -----------------------------
-function MecoDockManager() {
+export default function MecoDockManager() {
   const [app, setApp] = useLocalStorage("meco-app", {
     lados: Object.fromEntries(LADOS.map((n) => [n, { name: n, rows: [] }]))
   });
-
   const [active, setActive] = useState(LADOS[0]);
   const [filterEstado, setFilterEstado] = useState("TODOS");
   const [clock, setClock] = useState(nowISO());
   const [dockPanel, setDockPanel] = useState({ open: false, dock: undefined, info: undefined });
+  const [debugOpen, setDebugOpen] = useState(false);
+  const [importInfo, setImportInfo] = useState(null);
 
   useRealtimeSync(app, setApp);
 
@@ -420,6 +354,78 @@ function MecoDockManager() {
     setApp((prev) => ({ ...prev, lados: { ...prev.lados, [lado]: { ...prev.lados[lado], rows: [] } } }));
   }
 
+  // -------- Importar Excel: recorre TODAS las hojas y elige la de mejor score --------
+  function importExcel(file, lado) {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const data = new Uint8Array(e.target.result);
+        const wb = XLSX.read(data, { type: "array", cellDates: true });
+        const results = [];
+
+        for (const name of wb.SheetNames) {
+          const ws = wb.Sheets[name];
+          if (!ws) continue;
+
+          // Intento principal
+          let parsed = tryParseSheet(ws, name);
+
+          // Fallback: si no hay filas, intentamos con range ajustado a cabecera y sheet_to_json estándar
+          if (!parsed.rows.length && ws["!ref"]) {
+            try {
+              const range = XLSX.utils.decode_range(ws["!ref"]);
+              range.s.r = parsed.headerRowIdx; // empezar en fila cabecera
+              const adjRef = XLSX.utils.encode_range(range);
+              const ws2 = { ...ws, "!ref": adjRef };
+              const json2 = XLSX.utils.sheet_to_json(ws2, { defval: "", raw: false });
+              // mapear cabeceras sueltas:
+              const rows2 = json2.map((row) => {
+                const obj = {};
+                Object.keys(row).forEach((k) => { obj[mapHeader(k)] = coerceCell(row[k]); });
+                for (const h of EXPECTED_KEYS) if (!(h in obj)) obj[h] = "";
+                const empty = ["TRANSPORTISTA","MATRICULA","DESTINO","LLEGADA","SALIDA","OBSERVACIONES"]
+                  .every(k => String(obj[k] || "").trim() === "");
+                if (empty) return null;
+                if (obj["MUELLE"] !== "") {
+                  const num = Number(String(obj["MUELLE"]).trim());
+                  obj["MUELLE"] = Number.isFinite(num) && DOCKS.includes(num) ? num : "";
+                }
+                if (!obj["ESTADO"]) obj["ESTADO"] = "OK";
+                return { id: crypto.randomUUID(), ...obj };
+              }).filter(Boolean);
+              parsed = { ...parsed, rows: rows2 };
+            } catch {}
+          }
+
+          results.push(parsed);
+        }
+
+        // Elegimos la hoja con más filas útiles
+        results.sort((a, b) => b.rows.length - a.rows.length);
+        const best = results[0] || null;
+
+        setImportInfo({
+          sheetsTried: results.map(r => ({ sheet: r.sheetName, headerRowIdx: r.headerRowIdx, bestScore: r.bestScore, headers: r.headers, rows: r.rows.length })),
+          chosen: best ? { sheet: best.sheetName, headerRowIdx: best.headerRowIdx, bestScore: best.bestScore, headers: best.headers, rows: best.rows.length } : null,
+        });
+
+        const rows = best?.rows ?? [];
+        setApp((prev) => ({
+          ...prev,
+          lados: { ...prev.lados, [lado]: { ...prev.lados[lado], rows } },
+        }));
+
+        if (!rows.length) {
+          alert("No se han detectado filas con datos. Revisa que el Excel tenga una fila de cabeceras reconocible y datos debajo.");
+        }
+      } catch (err) {
+        console.error(err);
+        alert("Error al leer el Excel. ¿Es un .xlsx válido?");
+      }
+    };
+    reader.readAsArrayBuffer(file);
+  }
+
   function filteredRows(lado) {
     const list = app.lados[lado].rows;
     if (filterEstado === "TODOS") return list;
@@ -449,9 +455,42 @@ function MecoDockManager() {
           {/* Columna izquierda: pestañas + tabla */}
           <Card className="lg:col-span-2">
             <CardHeader className="pb-2">
-              <CardTitle>Operativas por lado</CardTitle>
+              <div className="flex items-center justify-between">
+                <CardTitle>Operativas por lado</CardTitle>
+                <Button size="sm" variant="outline" onClick={() => setDebugOpen(v => !v)}>
+                  {debugOpen ? "Ocultar diagnóstico" : "Ver diagnóstico de importación"}
+                </Button>
+              </div>
             </CardHeader>
             <CardContent>
+              {debugOpen && (
+                <div className="mb-4 p-3 border rounded text-xs bg-amber-50">
+                  <div className="font-semibold mb-1">Diagnóstico última importación</div>
+                  {!importInfo ? (
+                    <div className="text-muted-foreground">Aún no has importado ningún Excel.</div>
+                  ) : (
+                    <>
+                      <div className="mb-2">Hojas analizadas:</div>
+                      <ul className="list-disc pl-5 space-y-1">
+                        {importInfo.sheetsTried.map((it, idx) => (
+                          <li key={idx}>
+                            <span className="font-mono">{it.sheet}</span> · cabecera en fila <b>{it.headerRowIdx+1}</b> · score <b>{it.bestScore}</b> · columnas detectadas: <span className="font-mono">{(it.headers||[]).join(", ")}</span> · filas: <b>{it.rows}</b>
+                          </li>
+                        ))}
+                      </ul>
+                      {importInfo.chosen && (
+                        <div className="mt-2">
+                          <div><b>Usando hoja:</b> <span className="font-mono">{importInfo.chosen.sheet}</span></div>
+                          <div><b>Cabecera en fila:</b> {importInfo.chosen.headerRowIdx + 1}</div>
+                          <div><b>Columnas:</b> <span className="font-mono">{(importInfo.chosen.headers||[]).join(", ")}</span></div>
+                          <div><b>Filas importadas:</b> {importInfo.chosen.rows}</div>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
+
               <Tabs value={active} onValueChange={setActive}>
                 <TabsList className="flex flex-wrap">
                   {LADOS.map((n) => (
@@ -459,7 +498,7 @@ function MecoDockManager() {
                   ))}
                 </TabsList>
                 <div className="mt-3">
-                  <Toolbar
+                  <ToolbarX
                     onImport={(f) => importExcel(f, active)}
                     onAddRow={() => addRow(active)}
                     onClear={() => clearLado(active)}
@@ -651,10 +690,55 @@ function MecoDockManager() {
   );
 }
 
-// Exportación por defecto (para que App.jsx lo importe como default)
-export default MecoDockManager;
+// ------------------------------ Toolbar (usa import reforzado) --------------
+function ToolbarX({
+  onImport, onAddRow, onClear, filterEstado, setFilterEstado, onExport,
+}) {
+  const fileRef = useRef(null);
+  return (
+    <div className="flex items-center gap-2 flex-wrap">
+      <input
+        ref={fileRef}
+        type="file"
+        accept=".xlsx,.xls"
+        className="hidden"
+        onChange={(e) => {
+          const f = e.target.files && e.target.files[0];
+          if (f) onImport(f);
+          if (fileRef.current) fileRef.current.value = "";
+        }}
+      />
+      <Button size="sm" variant="secondary" onClick={() => fileRef.current && fileRef.current.click()}>
+        <FileUp className="mr-2 h-4 w-4" /> Importar Excel
+      </Button>
+      <Button size="sm" onClick={onExport}>
+        <Download className="mr-2 h-4 w-4" /> Exportar CSV
+      </Button>
+      <Button size="sm" variant="outline" onClick={onAddRow}>
+        <Plus className="mr-2 h-4 w-4" /> Nueva fila
+      </Button>
+      <Button size="sm" variant="destructive" onClick={onClear}>
+        <Trash2 className="mr-2 h-4 w-4" /> Vaciar lado
+      </Button>
+      <div className="ml-auto flex items-center gap-2">
+        <span className="text-sm text-muted-foreground">Filtrar estado</span>
+        <Select value={filterEstado} onValueChange={setFilterEstado}>
+          <SelectTrigger className="h-8 w-[160px]">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="TODOS">Todos</SelectItem>
+            {CAMION_ESTADOS.map((e) => (
+              <SelectItem key={e.key} value={e.key}>{e.label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+    </div>
+  );
+}
 
-// Utilidad para exportar CSV del lado activo
+// ----------------------------- Exportar CSV utilidad ------------------------
 function exportCSV(lado, app) {
   const rows = app.lados[lado].rows;
   const headers = ALL_HEADERS;
