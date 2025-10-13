@@ -4,20 +4,18 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { Download, FileUp, Plus, Trash2, X } from "lucide-react";
+import { Download, FileUp, Plus, Trash2, Upload, RefreshCw, X } from "lucide-react";
 import * as XLSX from "xlsx";
 import { motion } from "framer-motion";
 
 /**
  * PLMECO – Gestión de Muelles (WEB)
- * Esta versión incluye:
- * - Respeto estricto de ESTADO al importar (vacío, asterisco "*", guion "-", "N/A" => vacío; no se fuerza "OK").
- * - Filas coloreadas solo si ESTADO = OK/CARGANDO/ANULADO.
- * - Consolidación multi-lado de muelles con prioridad OCUPADO > ESPERA > LIBRE.
- * - Reordenación de columnas por drag&drop con persistencia (meco-colorder).
- * - Exportar CSV amigable para Excel (BOM, sep=; , valores entrecomillados).
- * - Exportar XLSX con orden visible y anchos razonables.
- * - Botón para limpiar caché local (meco-app / meco-colorder).
+ * Novedades:
+ * - Barra superior de resumen: OK (verde), CARGANDO (naranja), ANULADO (rojo), INCIDENCIAS (azul).
+ *   * Click en una casilla => panel con la lista agrupada (todos los lados).
+ * - Validación de MUELLE y aviso de conflictos multi-lado.
+ * - Persistencia central opcional (window.MECO_API_URL / MECO_API_KEY).
+ * - (Se mantiene todo lo que ya tenías: importación, colores de fila completos, reordenación, exportaciones, etc.)
  */
 
 // --------------------------- Constantes generales ---------------------------
@@ -131,10 +129,7 @@ function coerceCell(v) {
   return String(v).replace(/\r?\n+/g, " ").replace(/\s{2,}/g, " ").trim();
 }
 
-// Normaliza ESTADO desde Excel:
-// - vacío, "*", "-", "N/A", "NA" => ""
-// - "ok", "cargando", "anulado" => mayúsculas estándar
-// - cualquier otro texto => se deja en mayúsculas (sin forzar "OK")
+// Normaliza ESTADO desde Excel
 function normalizeEstado(v) {
   const raw = String(v ?? "").trim();
   if (raw === "" || raw === "*" || raw === "-" || /^N\/?A$/i.test(raw)) return "";
@@ -250,16 +245,49 @@ function estadoBadgeColor(estado) {
   return "bg-slate-400";
 }
 function rowColorByEstado(estado) {
-  if (estado === "ANULADO")  return "bg-red-100";
-  if (estado === "CARGANDO") return "bg-amber-100";
-  if (estado === "OK")       return "bg-emerald-100";
-  return ""; // vacío u otros -> sin color
+  if (estado === "ANULADO")  return "bg-red-200";
+  if (estado === "CARGANDO") return "bg-amber-200";
+  if (estado === "OK")       return "bg-emerald-200";
+  return "";
 }
 function rowAccentBorder(estado) {
   if (estado === "ANULADO")  return "border-l-4 border-red-400";
   if (estado === "CARGANDO") return "border-l-4 border-amber-400";
   if (estado === "OK")       return "border-l-4 border-emerald-400";
   return "";
+}
+
+// ---------------------- Validación y conflictos de muelle -------------------
+function isValidDockValue(val) {
+  if (val === "" || val == null) return true; // permitir vacío
+  const num = Number(String(val).trim());
+  return Number.isFinite(num) && DOCKS.includes(num);
+}
+function checkDockConflict(app, dockValue, currentLado, currentRowId) {
+  const num = Number(String(dockValue).trim());
+  if (!Number.isFinite(num)) return { conflict: false };
+
+  for (const ladoName of Object.keys(app.lados)) {
+    for (const row of app.lados[ladoName].rows) {
+      if (row.id === currentRowId && ladoName === currentLado) continue;
+      const mu = Number(String(row.MUELLE ?? "").trim());
+      if (mu !== num) continue;
+
+      const llegadaReal = (row["LLEGADA REAL"] || "").trim();
+      const salidaReal  = (row["SALIDA REAL"]  || "").trim();
+      let state = "ESPERA";
+      if (llegadaReal) state = "OCUPADO";
+      if (salidaReal)  state = "LIBRE";
+
+      if (state !== "LIBRE") {
+        return {
+          conflict: true,
+          info: { lado: ladoName, row, estado: state }
+        };
+      }
+    }
+  }
+  return { conflict: false };
 }
 
 // ------------------------------- Componente ---------------------------------
@@ -273,6 +301,10 @@ export default function MecoDockManager() {
   const [dockPanel, setDockPanel] = useState({ open: false, dock: undefined, lado: undefined, rowId: undefined });
   const [debugOpen, setDebugOpen] = useState(false);
   const [importInfo, setImportInfo] = useState(null);
+  const [syncMsg, setSyncMsg] = useState("");
+
+  // NUEVO: estado del panel de resumen
+  const [summary, setSummary] = useState({ open: false, type: null });
 
   // Orden columnas (drag&drop)
   const [columnOrder, setColumnOrder] = useLocalStorage("meco-colorder", DEFAULT_ORDER);
@@ -286,14 +318,69 @@ export default function MecoDockManager() {
 
   const docks = useMemo(() => deriveDocks(app.lados), [app]);
 
-  function updateRow(lado, id, patch) {
+  // --- Resumen global (todos los lados) ---
+  const summaryData = useMemo(() => {
+    const all = [];
+    for (const lado of Object.keys(app.lados)) {
+      for (const r of app.lados[lado].rows) {
+        all.push({ ...r, _lado: lado });
+      }
+    }
+    const is = (v, x) => (String(v || "").toUpperCase() === x);
+    return {
+      OK: all.filter(r => is(r.ESTADO, "OK")),
+      CARGANDO: all.filter(r => is(r.ESTADO, "CARGANDO")),
+      ANULADO: all.filter(r => is(r.ESTADO, "ANULADO")),
+      INCIDENCIAS: all.filter(r => (r.INCIDENCIAS || "").trim() !== ""),
+      total: all.length,
+    };
+  }, [app]);
+
+  function openSummary(type) {
+    setSummary({ open: true, type });
+  }
+  function closeSummary() {
+    setSummary({ open: false, type: null });
+  }
+
+  // --- Update helpers con validación de MUELLE y conflictos ---
+  function updateRowDirect(lado, id, patch) {
     setApp((prev) => {
       const rows = prev.lados[lado].rows.map((r) => (r.id === id ? { ...r, ...patch } : r));
       return { ...prev, lados: { ...prev.lados, [lado]: { ...prev.lados[lado], rows } } };
     });
   }
+
+  function setField(lado, id, field, value) {
+    if (field === "MUELLE") {
+      if (!isValidDockValue(value)) {
+        alert(`El muelle "${value}" no es válido. Solo se permiten: ${DOCKS.join(", ")}.`);
+        return;
+      }
+      const { conflict, info } = checkDockConflict(app, value, lado, id);
+      if (conflict) {
+        const txt = [
+          `El muelle ${value} está ${info.estado} en ${info.lado}.`,
+          `Matrícula: ${info.row.MATRICULA || "?"} · Destino: ${info.row.DESTINO || "?"}`,
+          ``,
+          `¿Quieres asignarlo igualmente?`,
+        ].join("\n");
+        const ok = confirm(txt);
+        if (!ok) return;
+      }
+    }
+    updateRowDirect(lado, id, { [field]: value });
+  }
+
+  function updateRow(lado, id, patch) {
+    if (Object.prototype.hasOwnProperty.call(patch, "MUELLE")) {
+      return setField(lado, id, "MUELLE", patch.MUELLE);
+    }
+    updateRowDirect(lado, id, patch);
+  }
+
   function addRow(lado) {
-    const newRow = { id: crypto.randomUUID(), ESTADO: "" }; // nada por defecto
+    const newRow = { id: crypto.randomUUID(), ESTADO: "" };
     setApp((prev) => ({ ...prev, lados: { ...prev.lados, [lado]: { ...prev.lados[lado], rows: [newRow, ...prev.lados[lado].rows] } } }));
   }
   function removeRow(lado, id) {
@@ -363,10 +450,7 @@ export default function MecoDockManager() {
         obj[k] = coerceCell(row[kRaw]);
       });
 
-      // Asegura todas las keys esperadas
       for (const h of EXPECTED_KEYS) if (!(h in obj)) obj[h] = "";
-
-      // Normalizar ESTADO (vacío o "*" / "-" / N/A => vacío; OK/CARGANDO/ANULADO mayúsculas)
       obj["ESTADO"] = normalizeEstado(obj["ESTADO"]);
 
       const keysMin = ["TRANSPORTISTA","MATRICULA","DESTINO","LLEGADA","SALIDA","OBSERVACIONES"];
@@ -400,6 +484,56 @@ export default function MecoDockManager() {
     const list = app.lados[lado].rows;
     if (filterEstado === "TODOS") return list;
     return list.filter((r) => (r.ESTADO || "") === filterEstado);
+  }
+
+  // --------------------------- Persistencia central -------------------------
+  async function uploadState() {
+    try {
+      setSyncMsg("Subiendo…");
+      const base = window.MECO_API_URL;
+      if (!base) { alert("Configura window.MECO_API_URL para usar la persistencia central."); setSyncMsg(""); return; }
+      const key = window.MECO_API_KEY;
+      const res = await fetch(new URL("/state", base), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(key ? { Authorization: `Bearer ${key}` } : {}),
+        },
+        body: JSON.stringify({ state: app }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setSyncMsg("Subido correctamente.");
+      setTimeout(()=>setSyncMsg(""), 2000);
+    } catch (e) {
+      console.error(e);
+      alert("Error al subir el estado al servidor.");
+      setSyncMsg("");
+    }
+  }
+  async function downloadState() {
+    try {
+      setSyncMsg("Cargando…");
+      const base = window.MECO_API_URL;
+      if (!base) { alert("Configura window.MECO_API_URL para usar la persistencia central."); setSyncMsg(""); return; }
+      const key = window.MECO_API_KEY;
+      const res = await fetch(new URL("/state", base), {
+        headers: { ...(key ? { Authorization: `Bearer ${key}` } : {}) }
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = await res.json();
+      if (json && json.state && json.state.lados) {
+        setApp(json.state);
+        setSyncMsg("Cargado correctamente.");
+        setTimeout(()=>setSyncMsg(""), 2000);
+      } else {
+        alert("Respuesta del servidor sin 'state' válido.");
+        setSyncMsg("");
+      }
+    } catch (e) {
+      console.error(e);
+      alert("Error al cargar el estado del servidor.");
+      setSyncMsg("");
+    }
   }
 
   // --------------------------- DnD Handlers (HTML5) -------------------------
@@ -452,8 +586,11 @@ export default function MecoDockManager() {
           </div>
         </header>
 
+        {/* NUEVO: Barra de resumen superior */}
+        <SummaryBar data={summaryData} onOpen={openSummary} />
+
         {/* 2 columnas: principal + derecha 290px */}
-        <div className="grid gap-3" style={{ gridTemplateColumns: "minmax(0,1fr) 290px" }}>
+        <div className="grid gap-3 mt-3" style={{ gridTemplateColumns: "minmax(0,1fr) 290px" }}>
           {/* Izquierda: pestañas + tabla */}
           <Card>
             <CardHeader className="pb-2">
@@ -515,10 +652,12 @@ export default function MecoDockManager() {
                     onResetCache={() => {
                       try {
                         localStorage.removeItem("meco-app");
-                        // Si quieres también el orden: localStorage.removeItem("meco-colorder");
                       } catch {}
                       window.location.reload();
                     }}
+                    onUploadState={uploadState}
+                    onDownloadState={downloadState}
+                    syncMsg={syncMsg}
                   />
                 </div>
 
@@ -560,11 +699,12 @@ export default function MecoDockManager() {
                                   {columnOrder.map((h) => {
                                     const isEstado = h === "ESTADO";
                                     const isInc    = h === "INCIDENCIAS";
+                                    const isMuelle = h === "MUELLE";
                                     return (
                                       <div key={h} className="p-1 border-r border-slate-100/60 flex items-center">
                                         {isEstado ? (
                                           <select
-                                            className="h-8 w-full border rounded px-2 bg-white/90 text-sm"
+                                            className="h-8 w-full border rounded px-2 bg-transparent text-sm"
                                             value={(row.ESTADO ?? "").toString()}
                                             onChange={(e)=>updateRow(n, row.id, { ESTADO: e.target.value })}
                                           >
@@ -573,16 +713,27 @@ export default function MecoDockManager() {
                                           </select>
                                         ) : isInc ? (
                                           <select
-                                            className="h-8 w-full border rounded px-2 bg-white/90 text-sm"
+                                            className="h-8 w-full border rounded px-2 bg-transparent text-sm"
                                             value={(row.INCIDENCIAS ?? "").toString()}
                                             onChange={(e)=>updateRow(n, row.id, { INCIDENCIAS: e.target.value })}
                                           >
                                             <option value="">Seleccionar</option>
                                             {INCIDENTES.map(opt => <option key={opt} value={opt}>{opt}</option>)}
                                           </select>
+                                        ) : isMuelle ? (
+                                          <input
+                                            className="h-8 w-full border rounded px-2 bg-transparent text-sm"
+                                            value={(row[h] ?? "").toString()}
+                                            onChange={(e) => setField(n, row.id, "MUELLE", e.target.value)}
+                                            onBlur={(e) => {
+                                              const v = e.target.value.trim();
+                                              if (v !== (row[h] ?? "")) setField(n, row.id, "MUELLE", v);
+                                            }}
+                                            placeholder="nº muelle"
+                                          />
                                         ) : (
                                           <input
-                                            className="h-8 w-full border rounded px-2 bg-white/90 text-sm"
+                                            className="h-8 w-full border rounded px-2 bg-transparent text-sm"
                                             value={(row[h] ?? "").toString()}
                                             onChange={(e) => updateRow(n, row.id, { [h]: e.target.value })}
                                           />
@@ -613,7 +764,10 @@ export default function MecoDockManager() {
         </div>
 
         {/* Drawer lateral (inputs 100% interactivos) */}
-        <DockDrawer app={app} dockPanel={dockPanel} setDockPanel={setDockPanel} updateRow={updateRow} />
+        <DockDrawer app={app} dockPanel={dockPanel} setDockPanel={setDockPanel} updateRow={updateRow} setField={setField} />
+
+        {/* NUEVO: Panel de resumen */}
+        <SummaryModal open={summary.open} type={summary.type} data={summaryData} onClose={closeSummary} />
 
         <footer className="mt-4 text-xs text-muted-foreground flex items-center justify-between">
           <div>Estados camión: <Badge className="bg-emerald-600">OK</Badge> · <Badge className="bg-amber-500">CARGANDO</Badge> · <Badge className="bg-red-600">ANULADO</Badge></div>
@@ -676,7 +830,7 @@ function DockRight({ app, setDockPanel, dockPanel }) {
 }
 
 // ------------------------------ Drawer lateral ------------------------------
-function DockDrawer({ app, dockPanel, setDockPanel, updateRow }) {
+function DockDrawer({ app, dockPanel, setDockPanel, updateRow, setField }) {
   return dockPanel.open && (
     <>
       <div
@@ -740,9 +894,9 @@ function DockDrawer({ app, dockPanel, setDockPanel, updateRow }) {
                   <InputX
                     label="Muelle"
                     value={(r["MUELLE"] ?? "").toString()}
-                    onChange={(v) => updateRow(lado, r.id, { MUELLE: v })}
+                    onChange={(v) => setField(lado, r.id, "MUELLE", v)}
                     placeholder="nº muelle"
-                    help="* Se valida en la parrilla"
+                    help={`Permitidos: ${DOCKS[0]}…`}
                   />
                   <InputX
                     label="Precinto"
@@ -839,8 +993,89 @@ function SelectX({ label, value, onChange, options }) {
   );
 }
 
+/* ========= NUEVOS COMPONENTES: SummaryBar & SummaryModal ========= */
+
+function SummaryBar({ data, onOpen }) {
+  const cards = [
+    { key: "OK", title: "OK", count: data.OK.length, color: "bg-emerald-600", sub: "Camiones en OK" },
+    { key: "CARGANDO", title: "Cargando", count: data.CARGANDO.length, color: "bg-amber-500", sub: "Camiones cargando" },
+    { key: "ANULADO", title: "Anulado", count: data.ANULADO.length, color: "bg-red-600", sub: "Camiones anulados" },
+    { key: "INCIDENCIAS", title: "Incidencias", count: data.INCIDENCIAS.length, color: "bg-indigo-600", sub: "Con incidencia" },
+  ];
+  return (
+    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      {cards.map(c => (
+        <button
+          key={c.key}
+          onClick={() => onOpen(c.key)}
+          className="rounded-2xl p-3 text-left shadow hover:shadow-md transition border bg-white"
+        >
+          <div className="flex items-center justify-between">
+            <div className="text-sm text-muted-foreground">{c.title}</div>
+            <span className={`inline-flex items-center justify-center w-7 h-7 text-white text-sm font-semibold rounded-full ${c.color}`}>
+              {c.count}
+            </span>
+          </div>
+          <div className="mt-2 text-xs text-slate-500">{c.sub}</div>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function SummaryModal({ open, type, data, onClose }) {
+  if (!open) return null;
+  const titleMap = { OK: "Resumen · OK", CARGANDO: "Resumen · Cargando", ANULADO: "Resumen · Anulado", INCIDENCIAS: "Resumen · Incidencias" };
+  const rows = data[type] || [];
+  return (
+    <>
+      <div className="fixed inset-0 bg-black/30 z-[9998]" onClick={onClose} />
+      <div className="fixed left-1/2 top-6 -translate-x-1/2 z-[9999] w-[95vw] max-w-6xl bg-white rounded-2xl shadow-2xl border overflow-hidden">
+        <div className="px-4 py-3 border-b flex items-center justify-between">
+          <div className="font-semibold">{titleMap[type] || "Resumen"}</div>
+          <Button size="icon" variant="ghost" onClick={onClose}><X className="w-5 h-5" /></Button>
+        </div>
+        <div className="p-3 max-h-[75vh] overflow-auto">
+          <div className="grid grid-cols-[90px_140px_minmax(140px,1fr)_80px_120px_120px_minmax(160px,1fr)] gap-2 text-[11px] font-semibold text-muted-foreground uppercase tracking-wide mb-2">
+            <div>Lado</div>
+            <div>Matrícula</div>
+            <div>Destino</div>
+            <div>Muelle</div>
+            <div>Llegada real</div>
+            <div>Salida real</div>
+            <div>{type === "INCIDENCIAS" ? "Incidencias" : "Estado"}</div>
+          </div>
+          <div className="divide-y">
+            {rows.map((r) => (
+              <div key={r.id} className="grid grid-cols-[90px_140px_minmax(140px,1fr)_80px_120px_120px_minmax(160px,1fr)] gap-2 py-2 text-sm">
+                <div className="font-medium">{r._lado}</div>
+                <div className="truncate">{r.MATRICULA || "—"}</div>
+                <div className="truncate">{r.DESTINO || "—"}</div>
+                <div>{r.MUELLE || "—"}</div>
+                <div>{r["LLEGADA REAL"] || "—"}</div>
+                <div>{r["SALIDA REAL"] || "—"}</div>
+                <div>
+                  {type === "INCIDENCIAS"
+                    ? (r.INCIDENCIAS || "—")
+                    : (r.ESTADO || "—")}
+                </div>
+              </div>
+            ))}
+            {rows.length === 0 && (
+              <div className="text-sm text-muted-foreground py-6 text-center">No hay elementos para mostrar.</div>
+            )}
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
 // ------------------------------ Toolbar & Export ----------------------------
-function ToolbarX({ onImport, onAddRow, onClear, filterEstado, setFilterEstado, onExportCSV, onExportXLSX, onResetCache }) {
+function ToolbarX({
+  onImport, onAddRow, onClear, filterEstado, setFilterEstado,
+  onExportCSV, onExportXLSX, onResetCache, onUploadState, onDownloadState, syncMsg
+}) {
   const fileRef = useRef(null);
   return (
     <div className="flex items-center gap-2 flex-wrap">
@@ -876,6 +1111,16 @@ function ToolbarX({ onImport, onAddRow, onClear, filterEstado, setFilterEstado, 
       <Button size="sm" variant="secondary" onClick={onResetCache}>
         Limpiar caché local
       </Button>
+
+      <div className="flex items-center gap-2">
+        <Button size="sm" variant="outline" onClick={onUploadState} title="Subir al servidor">
+          <Upload className="mr-2 h-4 w-4" /> Subir
+        </Button>
+        <Button size="sm" variant="outline" onClick={onDownloadState} title="Cargar del servidor">
+          <RefreshCw className="mr-2 h-4 w-4" /> Cargar
+        </Button>
+        {syncMsg ? <span className="text-xs text-muted-foreground">{syncMsg}</span> : null}
+      </div>
 
       <div className="ml-auto flex items-center gap-2">
         <span className="text-sm text-muted-foreground">Filtrar estado</span>
