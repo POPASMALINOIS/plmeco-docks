@@ -75,34 +75,41 @@ function parseFlexibleToDate(s){
 }
 function minutesDiff(a,b){ return Math.round((a.getTime()-b.getTime())/60000); }
 
-// ancho mínimo algo menor para permitir columnas más compactas
-function widthFromLen(len){ const ch=Math.min(Math.max(len*0.7+2,8),56); return `${Math.round(ch)}ch`; }
+// ancho mínimo con más holgura para que quepan encabezados largos
+function widthFromLen(len){
+  // generoso: 0.95 por carácter + 4ch de margen, mínimo 12ch
+  const ch = Math.min(Math.max(len * 0.95 + 4, 12), 72);
+  return `${Math.round(ch)}ch`;
+}
 
 // >>> OVERRIDES de ancho: compactar horas, muelle y estado <<<
 const TIME_COLS = new Set(["LLEGADA","LLEGADA REAL","SALIDA","SALIDA REAL","SALIDA TOPE"]); // HH:mm
 const FIXED_WIDTHS = {
-  MUELLE: "7ch",            // 3 dígitos + margen
-  ESTADO: "11ch",           // que quepa "CARGANDO"
+  MUELLE: "8ch",            // 3-4 dígitos + margen
+  ESTADO: "12ch",           // que quepa "CARGANDO"
 };
-const TIME_WIDTH = "8ch";   // HH:mm
+const TIME_WIDTH = "9ch";   // HH:mm
 const ACTIONS_WIDTH = "3.2rem"; // solo icono borrar
 
-// cálculo de width basado en el **máximo** entre datos y encabezado
+// cálculo de width basado en el **máximo** entre datos y encabezado + padding extra amplio
 function computeColumnTemplate(rows, order){
   const widths = order.map((h)=>{
     if (TIME_COLS.has(h)) return TIME_WIDTH;
     if (h in FIXED_WIDTHS) return FIXED_WIDTHS[h];
 
     const headerLen = (h || "").length;
-    let dataMax = 0;
-    if (rows && rows.length) {
-      dataMax = Math.max(...rows.map(r => ((r?.[h] ?? "") + "").length), 0);
-    }
+    const dataMax = rows && rows.length ? Math.max(...rows.map(r => ((r?.[h] ?? "") + "").length), 0) : 0;
+
+    // padding extra para evitar cortes visuales
+    const pad = 6;
 
     if (h === "MATRICULA") {
-      return widthFromLen(Math.max(dataMax + 6, headerLen));
+      return widthFromLen(Math.max(dataMax + 8, headerLen) + pad);
     }
-    return widthFromLen(Math.max(dataMax, headerLen));
+    if (h === "OBSERVACIONES" || h === "DESTINO" || h === "TRANSPORTISTA") {
+      return widthFromLen(Math.max(dataMax, headerLen) + pad + 6);
+    }
+    return widthFromLen(Math.max(dataMax, headerLen) + pad);
   });
 
   return `${widths.join(" ")} ${ACTIONS_WIDTH}`;
@@ -124,9 +131,7 @@ function useRealtimeSync(state, setState) {
   useEffect(() => {
     try {
       bcRef.current = new BroadcastChannel("meco-docks");
-    } catch (e) {
-      // Browser sin soporte: ignorar
-    }
+    } catch (e) {}
     var bc = bcRef.current;
 
     function onMsg(ev) {
@@ -136,14 +141,10 @@ function useRealtimeSync(state, setState) {
       }
     }
 
-    if (bc && bc.addEventListener) {
-      bc.addEventListener("message", onMsg);
-    }
+    if (bc && bc.addEventListener) bc.addEventListener("message", onMsg);
 
     return () => {
-      if (bc && bc.removeEventListener) {
-        bc.removeEventListener("message", onMsg);
-      }
+      if (bc && bc.removeEventListener) bc.removeEventListener("message", onMsg);
     };
   }, [setState]);
 
@@ -157,18 +158,14 @@ function useRealtimeSync(state, setState) {
       wsRef.current = ws;
 
       ws.addEventListener("open", function () {
-        try {
-          ws.send(JSON.stringify({ type: "HELLO", role: "client" }));
-        } catch (e) {}
+        try { ws.send(JSON.stringify({ type: "HELLO", role: "client" })); } catch (e) {}
       });
 
       function onWSMessage(e) {
         try {
           var msg = null;
           try { msg = JSON.parse(e.data); } catch (err) {}
-          if (msg && msg.type === "APP_STATE" && msg.payload) {
-            setState(msg.payload);
-          }
+          if (msg && msg.type === "APP_STATE" && msg.payload) setState(msg.payload);
         } catch (e2) {}
       }
 
@@ -294,8 +291,11 @@ export default function MecoDockManager(){
   // Resumen / modal
   const [summary,setSummary]=useState({open:false,type:null});
 
-  // Orden columnas
+  // Orden columnas (persistente)
   const [columnOrder,setColumnOrder]=useLocalStorage("meco-colorder",DEFAULT_ORDER);
+
+  // drag & drop headers
+  const dragFromIdx = useRef(null);
 
   useRealtimeSync(app,setApp);
   useEffect(()=>{ const t=setInterval(()=>setClock(nowISO()),1000); return ()=>clearInterval(t); },[]);
@@ -374,7 +374,6 @@ export default function MecoDockManager(){
         });
         const rows=best?.rows??[];
 
-        // actualizar el lado con estructura segura
         setApp(prev => ({
           ...prev,
           lados: {
@@ -470,6 +469,25 @@ export default function MecoDockManager(){
   }
   function cancelDock(rowId) {
     setDockEdit(prev => { const n={...prev}; delete n[rowId]; return n; });
+  }
+
+  // handlers drag&drop headers
+  function onHeaderDragStart(idx){
+    dragFromIdx.current = idx;
+  }
+  function onHeaderDragOver(e){
+    e.preventDefault();
+  }
+  function onHeaderDrop(idxTo){
+    const from = dragFromIdx.current;
+    dragFromIdx.current = null;
+    if (from==null || from===idxTo) return;
+    setColumnOrder(prev=>{
+      const arr=[...prev];
+      const [moved]=arr.splice(from,1);
+      arr.splice(idxTo,0,moved);
+      return arr;
+    });
   }
 
   // render
@@ -573,14 +591,29 @@ export default function MecoDockManager(){
                   return (
                     <TabsContent key={n} value={n} className="mt-3">
                       <div className="border rounded-xl overflow-hidden">
+                        {/* Importante: scroll X si hace falta */}
                         <div className="overflow-auto max-h-[84vh]">
-                          {/* Encabezados compactos en una sola línea */}
-                          <div className="grid bg-slate-200 sticky top-0 z-10 select-none" style={{gridTemplateColumns:gridTemplate}}>
-                            {columnOrder.map((h)=><HeaderCell key={h} title={h} />)}
+                          {/* Encabezados: drag&drop + no truncar */}
+                          <div
+                            className="grid bg-slate-200 sticky top-0 z-10 select-none"
+                            style={{gridTemplateColumns:gridTemplate, minWidth: "100%"}}
+                          >
+                            {columnOrder.map((h,idx)=>(
+                              <HeaderCell
+                                key={h}
+                                title={h}
+                                draggable
+                                onDragStart={()=>onHeaderDragStart(idx)}
+                                onDragOver={onHeaderDragOver}
+                                onDrop={()=>onHeaderDrop(idx)}
+                              />
+                            ))}
                             <div className="bg-slate-50 p-1.5">
                               <div className="text-[10px] leading-tight font-semibold text-muted-foreground uppercase tracking-wide text-center whitespace-nowrap">Acc.</div>
                             </div>
                           </div>
+
+                          {/* Filas */}
                           <div>
                             {filteredRows(n).map((row)=>{
                               const estado=(row.ESTADO||"").toString();
@@ -590,7 +623,7 @@ export default function MecoDockManager(){
                               return (
                                 <Tooltip key={row.id}>
                                   <TooltipTrigger asChild>
-                                    <div className={`grid border-t ${rowColorByEstado(estado)} ${rowAccentBorder(estado)} border-slate-200 ${outline}`} style={{gridTemplateColumns:gridTemplate}}>
+                                    <div className={`grid border-t ${rowColorByEstado(estado)} ${rowAccentBorder(estado)} border-slate-200 ${outline}`} style={{gridTemplateColumns:gridTemplate, minWidth: "100%"}}>
                                       {columnOrder.map((h)=>{
                                         const isEstado=h==="ESTADO", isInc=h==="INCIDENCIAS", isMuelle=h==="MUELLE";
                                         return (
@@ -666,7 +699,7 @@ export default function MecoDockManager(){
         />
 
         {/* Modal resumen */}
-        <SummaryModal open={summary.open} type={summary.type} data={summaryData} onClose={closeSummary} />
+        <SummaryModal open={summary.open} type={summary.type} data={summaryData} onClose={()=>setSummary({open:false,type:null})} />
 
         {/* Modal Login */}
         {loginOpen && (
@@ -795,18 +828,23 @@ function DockDrawer({app,dockPanel,setDockPanel,updateRow,setField,dockEdit,setD
 }
 
 // ------------------------------ Subcomponentes UI ---------------------------
-function HeaderCell({title}) {
+function HeaderCell({title, draggable, onDragStart, onDragOver, onDrop}) {
   return (
-    <div className="bg-slate-50 p-1.5 border-r border-slate-200">
+    <div
+      className="bg-slate-50 p-1.5 border-r border-slate-200 cursor-move"
+      draggable={draggable}
+      onDragStart={onDragStart}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+      title={`Arrastra para reordenar: ${title}`}
+    >
       <div
         className="
           text-[10px] leading-tight font-semibold text-muted-foreground uppercase tracking-wide
-          flex items-center gap-1
+          flex items-center
           whitespace-nowrap
         "
-        title={title}
       >
-        <span className="inline-block select-none text-[10px]">⋮⋮</span>
         <span className="block">{title}</span>
       </div>
     </div>
@@ -989,11 +1027,11 @@ function exportXLSX(lado,app,columnOrder){
   const data=rows.map(r=>{ const o={}; headers.forEach(h=>{o[h]=r[h]??""}); return o; });
   const ws=XLSX.utils.json_to_sheet(data,{header:headers,skipHeader:false});
   const colWidths=headers.map(h=>{ 
-    if (TIME_COLS.has(h)) return {wch: 8}; 
-    if (h==="MUELLE") return {wch: 7};
-    if (h==="ESTADO") return {wch: 11};
+    if (TIME_COLS.has(h)) return {wch: 9}; 
+    if (h==="MUELLE") return {wch: 8};
+    if (h==="ESTADO") return {wch: 12};
     const maxLen=Math.max(...rows.map(r=>((r?.[h]??"")+"").length), 0, (h||"").length);
-    return {wch:Math.min(Math.max(Math.ceil((maxLen||8)*0.9)+2,8),50)};
+    return {wch:Math.min(Math.max(Math.ceil((maxLen||8)*0.95)+4,10),70)};
   });
   ws["!cols"]=colWidths;
   const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,lado.replace(/[\\/?*[\]]/g,"_").slice(0,31));
