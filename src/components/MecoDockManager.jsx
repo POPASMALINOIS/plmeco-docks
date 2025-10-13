@@ -284,7 +284,7 @@ export default function MecoDockManager(){
   function removeRow(lado,id){ setApp(prev=>({...prev,lados:{...prev.lados,[lado]:{...prev.lados[lado],rows:prev.lados[lado].rows.filter(r=>r.id!==id)}}})); }
   function clearLado(lado){ setApp(prev=>({...prev,lados:{...prev.lados,[lado]:{...prev.lados[lado],rows:[]}}})); }
 
-  // import
+  // ----------------- IMPORT Excel -----------------
   function importExcel(file,lado){
     const reader=new FileReader();
     reader.onload=(e)=>{
@@ -300,7 +300,20 @@ export default function MecoDockManager(){
           chosen:best?{sheet:best.sheetName,headerRowIdx:best.headerRowIdx,bestScore:best.bestScore,headers:best.headers,rows:best.rows.length}:null,
         });
         const rows=best?.rows??[];
-        setApp(prev=>({...prev,lados:{...prev.lados[lado]:?prev.lados[lado]:{rows:[]},[lado]:{...prev.lados[lado],rows}}}));
+
+        // *** FIX correcto: actualizar el lado con estructura segura ***
+        setApp(prev => ({
+          ...prev,
+          lados: {
+            ...prev.lados,
+            [lado]: {
+              ...(prev.lados?.[lado] ?? { name: lado, rows: [] }),
+              rows,
+            },
+          },
+        }));
+
+        if(!rows.length) alert("No se han detectado filas con datos. Revisa cabeceras y datos.");
       }catch(err){ console.error(err); alert("Error al leer el Excel."); }
     };
     reader.readAsArrayBuffer(file);
