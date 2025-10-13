@@ -10,10 +10,14 @@ import { motion } from "framer-motion";
 
 /**
  * PLMECO – Gestión de Muelles (WEB)
- * Cambios en esta versión:
- * - Se respeta el valor de ESTADO al importar (vacío o "*" => queda vacío; no se fuerza "OK").
- * - Si ESTADO está vacío, la fila no se colorea (neutro).
- * - Mantiene: consolidación multi-lado de muelles, DnD de columnas con persistencia, panel de muelle editable.
+ * Esta versión incluye:
+ * - Respeto estricto de ESTADO al importar (vacío/*/-/N/A => vacío, no "OK").
+ * - Filas coloreadas solo si ESTADO = OK/CARGANDO/ANULADO.
+ * - Consolidación multi-lado de muelles con prioridad OCUPADO > ESPERA > LIBRE.
+ * - Reordenación de columnas por drag&drop con persistencia (meco-colorder).
+ * - Exportar CSV amigable para Excel (BOM, sep=; , valores entrecomillados).
+ * - Exportar XLSX con orden visible y anchos razonables.
+ * - Botón para limpiar caché local (meco-app / meco-colorder).
  */
 
 // --------------------------- Constantes generales ---------------------------
@@ -32,7 +36,7 @@ const INCIDENTES = [
 ];
 const CAMION_ESTADOS = ["OK", "CARGANDO", "ANULADO"];
 
-// Cabeceras base que pueden venir del Excel
+// Cabeceras que pueden venir del Excel
 const BASE_HEADERS = [
   "TRANSPORTISTA",
   "MATRICULA",
@@ -43,7 +47,7 @@ const BASE_HEADERS = [
   "OBSERVACIONES",
 ];
 
-// Columnas extra propias de la app
+// Columnas extra de la app
 const EXTRA_HEADERS = [
   "MUELLE",
   "PRECINTO",
@@ -55,14 +59,12 @@ const EXTRA_HEADERS = [
 
 // Orden por defecto (visible)
 const DEFAULT_ORDER = [
-  // Grupo solicitado primero:
   "TRANSPORTISTA",
   "DESTINO",
   "MUELLE",
   "PRECINTO",
   "LLEGADA REAL",
   "SALIDA REAL",
-  // Resto:
   "MATRICULA",
   "LLEGADA",
   "SALIDA",
@@ -74,7 +76,7 @@ const DEFAULT_ORDER = [
 
 const EXPECTED_KEYS = [...new Set([...BASE_HEADERS, ...EXTRA_HEADERS])];
 
-// Alias de cabeceras (normalización)
+// --------------------------- Utilidades -------------------------------------
 function norm(s) {
   return (s ?? "")
     .toString()
@@ -85,6 +87,7 @@ function norm(s) {
     .replace(/\p{Diacritic}/gu, "")
     .trim();
 }
+
 const HEADER_ALIASES = {
   "transportista": "TRANSPORTISTA",
   "transporte": "TRANSPORTISTA",
@@ -111,6 +114,7 @@ function mapHeader(name) {
   const n = norm(name);
   return HEADER_ALIASES[n] || (name ?? "").toString().toUpperCase().trim();
 }
+
 function nowISO() {
   const d = new Date();
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -120,19 +124,24 @@ function nowISO() {
     return d.toLocaleString();
   }
 }
+
 function coerceCell(v) {
   if (v == null) return "";
   if (v instanceof Date) return v.toISOString();
   return String(v).replace(/\r?\n+/g, " ").replace(/\s{2,}/g, " ").trim();
 }
 
-// Normaliza ESTADO desde Excel: vacío o "*" => "", acepta OK/CARGANDO/ANULADO (case-insensitive).
+// Normaliza ESTADO desde Excel:
+// - vacío, "*", "-", "N/A", "NA" => ""
+// - "ok", "cargando", "anulado" => mayúsculas estándar
+// - cualquier otro texto => se deja en mayúsculas (sin forzar "OK")
 function normalizeEstado(v) {
   const raw = String(v ?? "").trim();
-  if (raw === "" || raw === "*") return "";
+  if (raw === "" || raw === "*" || raw === "-" || /^N\/?A$/i.test(raw)) return "";
   const up = raw.toUpperCase();
-  if (["OK", "CARGANDO", "ANULADO"].includes(up)) return up;
-  // Si viene otro texto, lo dejamos tal cual en mayúsculas (por si hay variantes internas)
+  if (up === "OK") return "OK";
+  if (up === "CARGANDO") return "CARGANDO";
+  if (up === "ANULADO") return "ANULADO";
   return up;
 }
 
@@ -147,7 +156,7 @@ function computeColumnTemplate(rows, order) {
       (h || "").length,
       ...rows.map(r => ((r?.[h] ?? "") + "").length)
     );
-    if (h === "MATRICULA") return widthFromLen(maxLen + 6); // plus para que no se corte
+    if (h === "MATRICULA") return widthFromLen(maxLen + 6);
     return widthFromLen(maxLen);
   });
   return `${widths.join(" ")} 8rem`; // última = Acciones
@@ -238,7 +247,7 @@ function estadoBadgeColor(estado) {
   if (estado === "ANULADO")  return "bg-red-600";
   if (estado === "CARGANDO") return "bg-amber-500";
   if (estado === "OK")       return "bg-emerald-600";
-  return "bg-slate-400"; // para estados no reconocidos
+  return "bg-slate-400";
 }
 function rowColorByEstado(estado) {
   if (estado === "ANULADO")  return "bg-red-100";
@@ -284,7 +293,7 @@ export default function MecoDockManager() {
     });
   }
   function addRow(lado) {
-    const newRow = { id: crypto.randomUUID(), ESTADO: "" }; // por defecto vacío
+    const newRow = { id: crypto.randomUUID(), ESTADO: "" }; // nada por defecto
     setApp((prev) => ({ ...prev, lados: { ...prev.lados, [lado]: { ...prev.lados[lado], rows: [newRow, ...prev.lados[lado].rows] } } }));
   }
   function removeRow(lado, id) {
@@ -353,10 +362,11 @@ export default function MecoDockManager() {
         seenHeaders.add(k);
         obj[k] = coerceCell(row[kRaw]);
       });
-      // Aseguramos todas las keys esperadas
+
+      // Asegura todas las keys esperadas
       for (const h of EXPECTED_KEYS) if (!(h in obj)) obj[h] = "";
 
-      // Normalizar ESTADO (vacío o "*" => vacío; OK/CARGANDO/ANULADO en mayúsculas; otros => mayúsculas)
+      // Normalizar ESTADO (vacío o "*" / "-" / N/A => vacío; OK/CARGANDO/ANULADO mayúsculas)
       obj["ESTADO"] = normalizeEstado(obj["ESTADO"]);
 
       const keysMin = ["TRANSPORTISTA","MATRICULA","DESTINO","LLEGADA","SALIDA","OBSERVACIONES"];
@@ -368,6 +378,7 @@ export default function MecoDockManager() {
 
     return { sheetName, headerRowIdx, bestScore, headers: Array.from(seenHeaders), rows };
   }
+
   function expandHeaderMerges(ws, headerRowIdx) {
     const merges = ws["!merges"] || [];
     merges.forEach((m) => {
@@ -499,7 +510,15 @@ export default function MecoDockManager() {
                     onClear={() => clearLado(active)}
                     filterEstado={filterEstado}
                     setFilterEstado={setFilterEstado}
-                    onExport={() => exportCSV(active, app, columnOrder)}
+                    onExportCSV={() => exportCSV(active, app, columnOrder)}
+                    onExportXLSX={() => exportXLSX(active, app, columnOrder)}
+                    onResetCache={() => {
+                      try {
+                        localStorage.removeItem("meco-app");
+                        // Si quieres también el orden: localStorage.removeItem("meco-colorder");
+                      } catch {}
+                      window.location.reload();
+                    }}
                   />
                 </div>
 
@@ -821,7 +840,7 @@ function SelectX({ label, value, onChange, options }) {
 }
 
 // ------------------------------ Toolbar & Export ----------------------------
-function ToolbarX({ onImport, onAddRow, onClear, filterEstado, setFilterEstado, onExport }) {
+function ToolbarX({ onImport, onAddRow, onClear, filterEstado, setFilterEstado, onExportCSV, onExportXLSX, onResetCache }) {
   const fileRef = useRef(null);
   return (
     <div className="flex items-center gap-2 flex-wrap">
@@ -839,15 +858,25 @@ function ToolbarX({ onImport, onAddRow, onClear, filterEstado, setFilterEstado, 
       <Button size="sm" variant="secondary" onClick={() => fileRef.current && fileRef.current.click()}>
         <FileUp className="mr-2 h-4 w-4" /> Importar Excel
       </Button>
-      <Button size="sm" onClick={onExport}>
+
+      <Button size="sm" onClick={onExportCSV}>
         <Download className="mr-2 h-4 w-4" /> Exportar CSV
       </Button>
+      <Button size="sm" onClick={onExportXLSX} variant="outline">
+        <Download className="mr-2 h-4 w-4" /> Exportar Excel (.xlsx)
+      </Button>
+
       <Button size="sm" variant="outline" onClick={onAddRow}>
         <Plus className="mr-2 h-4 w-4" /> Nueva fila
       </Button>
       <Button size="sm" variant="destructive" onClick={onClear}>
         <Trash2 className="mr-2 h-4 w-4" /> Vaciar lado
       </Button>
+
+      <Button size="sm" variant="secondary" onClick={onResetCache}>
+        Limpiar caché local
+      </Button>
+
       <div className="ml-auto flex items-center gap-2">
         <span className="text-sm text-muted-foreground">Filtrar estado</span>
         <select
@@ -865,14 +894,47 @@ function ToolbarX({ onImport, onAddRow, onClear, filterEstado, setFilterEstado, 
 
 function exportCSV(lado, app, columnOrder) {
   const headers = columnOrder;
-  const rows = app.lados[lado].rows;
-  const csv = [headers.join(",")]
-    .concat(rows.map((r) => headers.map((h) => (r[h] ?? "")).join(",")))
-    .join("\n");
-  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const rows = app.lados[lado].rows || [];
+
+  const SEP = ";";
+  const esc = (val) => {
+    const s = (val ?? "").toString().replace(/\r?\n/g, " ");
+    const doubled = s.replace(/"/g, '""');
+    return `"${doubled}"`;
+  };
+
+  const headerLine = headers.map(h => esc(h)).join(SEP);
+  const dataLines = rows.map(r => headers.map(h => esc(r[h])).join(SEP));
+
+  const content = "\uFEFF" + "sep=" + SEP + "\r\n" + [headerLine, ...dataLines].join("\r\n");
+
+  const blob = new Blob([content], { type: "text/csv;charset=utf-8;" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url; a.download = `${lado.replace(/\s+/g, "_")}.csv`;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+function exportXLSX(lado, app, columnOrder) {
+  const headers = columnOrder;
+  const rows = app.lados[lado].rows || [];
+
+  const data = rows.map(r => {
+    const o = {};
+    headers.forEach(h => { o[h] = r[h] ?? ""; });
+    return o;
+  });
+
+  const ws = XLSX.utils.json_to_sheet(data, { header: headers, skipHeader: false });
+  const colWidths = headers.map(h => {
+    const maxLen = Math.max(h.length, ...rows.map(r => ((r?.[h] ?? "") + "").length));
+    return { wch: Math.min(Math.max(Math.ceil(maxLen * 0.9) + 2, 10), 50) };
+  });
+  ws["!cols"] = colWidths;
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, lado.replace(/[\\/?*[\]]/g, "_").slice(0, 31));
+
+  XLSX.writeFile(wb, `${lado.replace(/\s+/g, "_")}.xlsx`, { bookType: "xlsx", compression: true });
 }
