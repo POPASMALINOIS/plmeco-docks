@@ -8,21 +8,12 @@ import { Download, FileUp, Plus, Trash2, Upload, RefreshCw, LogIn, LogOut, X, Al
 import * as XLSX from "xlsx";
 import { motion } from "framer-motion";
 
-/**
- * PLMECO – Gestión de Muelles (WEB)
- * Novedades:
- * - Barra de resumen con tarjetas SLA: "SLA Espera" (warn/crit) y "SLA Tope" (warn/crit).
- * - Click en tarjeta SLA abre el modal de resumen filtrado a ese tipo.
- * - Se mantiene todo lo anterior (SLA en filas, login, persistencia, validaciones, etc.)
- */
-
 /* ========================= PARÁMETROS SLA AJUSTABLES ====================== */
-const SLA_WAIT_WARN_MIN = 15; // aviso espera en muelle (min)
-const SLA_WAIT_CRIT_MIN = 30; // crítico espera en muelle (min)
-const SLA_TOPE_WARN_MIN = 15; // minutos previos a SALIDA TOPE para aviso
+const SLA_WAIT_WARN_MIN = 15;
+const SLA_WAIT_CRIT_MIN = 30;
+const SLA_TOPE_WARN_MIN = 15;
 /* ========================================================================== */
 
-// --------------------------- Constantes generales ---------------------------
 const DOCKS = [
   312,313,314,315,316,317,318,319,320,321,322,323,324,325,326,327,328,329,330,331,332,333,334,335,336,337,
   351,352,353,354,355,356,357,359,360,361,362,363,364,365,366,367,368,369,
@@ -73,7 +64,6 @@ function normalizeEstado(v){
   const up=raw.toUpperCase(); if(up==="OK"||up==="CARGANDO"||up==="ANULADO") return up; return up;
 }
 
-// Parse de fechas flexible
 function parseFlexibleToDate(s){
   const str=(s??"").toString().trim(); if(!str) return null;
   const hm=/^(\d{1,2}):(\d{2})$/.exec(str);
@@ -85,7 +75,6 @@ function parseFlexibleToDate(s){
 }
 function minutesDiff(a,b){ return Math.round((a.getTime()-b.getTime())/60000); }
 
-// Autoancho
 function widthFromLen(len){ const ch=Math.min(Math.max(len*0.7+3,10),56); return `${Math.round(ch)}ch`; }
 function computeColumnTemplate(rows, order){
   const widths=order.map((h)=>{ const maxLen=Math.max((h||"").length,...rows.map(r=>((r?.[h]??"")+"").length)); return h==="MATRICULA"?widthFromLen(maxLen+6):widthFromLen(maxLen);});
@@ -162,7 +151,6 @@ function withDockAssignStamp(prevRow,nextRow){
 }
 function getSLA(row){
   const now=new Date();
-  // Espera (muelle asignado y sin llegada real)
   let wait={level:null,minutes:0};
   const muelle=(row.MUELLE||"").toString().trim();
   const llegadaReal=(row["LLEGADA REAL"]||"").toString().trim();
@@ -171,7 +159,6 @@ function getSLA(row){
     if(!ref && row.LLEGADA){ const d=parseFlexibleToDate(row.LLEGADA); if(d) ref=d; }
     if(ref){ const m=minutesDiff(now,ref); wait.minutes=m; if(m>=SLA_WAIT_CRIT_MIN) wait.level="crit"; else if(m>=SLA_WAIT_WARN_MIN) wait.level="warn"; }
   }
-  // Salida Tope
   let tope={level:null,diff:0};
   const salidaReal=(row["SALIDA REAL"]||"").toString().trim();
   const salidaTope=parseFlexibleToDate(row["SALIDA TOPE"]||"");
@@ -206,6 +193,10 @@ export default function MecoDockManager(){
   const [importInfo,setImportInfo]=useState(null);
   const [syncMsg,setSyncMsg]=useState("");
 
+  // <<<<<<<<<<<<< NUEVO: estado local para edición libre del MUELLE >>>>>>>>>>>>
+  // Mapa { [rowId]: valorTemporalString }
+  const [dockEdit, setDockEdit] = useState({});
+
   // Auth
   const [auth,setAuth]=useLocalStorage("meco-auth",{token:null,user:null});
   const [loginOpen,setLoginOpen]=useState(false);
@@ -217,17 +208,13 @@ export default function MecoDockManager(){
   // Orden columnas
   const [columnOrder,setColumnOrder]=useLocalStorage("meco-colorder",DEFAULT_ORDER);
 
-  // RT
   useRealtimeSync(app,setApp);
   useEffect(()=>{ const t=setInterval(()=>setClock(nowISO()),1000); return ()=>clearInterval(t); },[]);
 
-  // --- Resumen global (incluye contadores SLA) ---
   const summaryData=useMemo(()=>{
     const all=[];
     for(const lado of Object.keys(app.lados)){ for(const r of app.lados[lado].rows){ all.push({...r,_lado:lado}); } }
     const is=(v,x)=> (String(v||"").toUpperCase()===x);
-
-    // SLA counters
     let waitWarn=0, waitCrit=0, topeWarn=0, topeCrit=0;
     const waitRows=[], topeRows=[];
     all.forEach(r=>{
@@ -235,14 +222,12 @@ export default function MecoDockManager(){
       if(sla.wait.level){ waitRows.push({...r,_sla:sla}); if(sla.wait.level==="crit") waitCrit++; else waitWarn++; }
       if(sla.tope.level){ topeRows.push({...r,_sla:sla}); if(sla.tope.level==="crit") topeCrit++; else topeWarn++; }
     });
-
     return {
       OK: all.filter(r=>is(r.ESTADO,"OK")),
       CARGANDO: all.filter(r=>is(r.ESTADO,"CARGANDO")),
       ANULADO: all.filter(r=>is(r.ESTADO,"ANULADO")),
       INCIDENCIAS: all.filter(r=>(r.INCIDENCIAS||"").trim()!==""),
       total: all.length,
-      // SLA
       SLA_WAIT: { warn: waitWarn, crit: waitCrit, rows: waitRows },
       SLA_TOPE: { warn: topeWarn, crit: topeCrit, rows: topeRows },
     };
@@ -251,16 +236,18 @@ export default function MecoDockManager(){
   function openSummary(type){ setSummary({open:true,type}); }
   function closeSummary(){ setSummary({open:false,type:null}); }
 
-  // Updates con validación y sello asignación
+  // ----------------- helpers de actualización -----------------
   function updateRowDirect(lado,id,patch){
     setApp(prev=>{
       const rows=prev.lados[lado].rows.map(r=> r.id===id ? withDockAssignStamp(r,{...r,...patch}) : r );
       return {...prev,lados:{...prev.lados,[lado]:{...prev.lados[lado],rows}}};
     });
   }
+
+  // Validación de MUELLE (solo al confirmar)
   function setField(lado,id,field,value){
     if(field==="MUELLE"){
-      if(!isValidDockValue(value)){ alert(`El muelle "${value}" no es válido. Solo: ${DOCKS.join(", ")}.`); return; }
+      if(!isValidDockValue(value)){ alert(`El muelle "${value}" no es válido. Solo: ${DOCKS.join(", ")}.`); return false; }
       const {conflict,info}=checkDockConflict(app,value,lado,id);
       if(conflict){
         const ok=confirm([
@@ -268,20 +255,26 @@ export default function MecoDockManager(){
           `Matrícula: ${info.row.MATRICULA||"?"} · Destino: ${info.row.DESTINO||"?"}`,
           ``,
           `¿Asignarlo igualmente?`,
-        ].join("\n")); if(!ok) return;
+        ].join("\n")); if(!ok) return false;
       }
     }
     updateRowDirect(lado,id,{[field]:value});
+    return true;
   }
+
   function updateRow(lado,id,patch){
-    if(Object.prototype.hasOwnProperty.call(patch,"MUELLE")) return setField(lado,id,"MUELLE",patch.MUELLE);
+    if(Object.prototype.hasOwnProperty.call(patch,"MUELLE")) {
+      return setField(lado,id,"MUELLE",patch.MUELLE);
+    }
     updateRowDirect(lado,id,patch);
+    return true;
   }
+
   function addRow(lado){ const newRow={id:crypto.randomUUID(),ESTADO:""}; setApp(prev=>({...prev,lados:{...prev.lados,[lado]:{...prev.lados[lado],rows:[newRow,...prev.lados[lado].rows]}}})); }
   function removeRow(lado,id){ setApp(prev=>({...prev,lados:{...prev.lados,[lado]:{...prev.lados[lado],rows:prev.lados[lado].rows.filter(r=>r.id!==id)}}})); }
   function clearLado(lado){ setApp(prev=>({...prev,lados:{...prev.lados,[lado]:{...prev.lados[lado],rows:[]}}})); }
 
-  // Importador Excel
+  // ----------------- IMPORT Excel -----------------
   function importExcel(file,lado){
     const reader=new FileReader();
     reader.onload=(e)=>{
@@ -337,7 +330,7 @@ export default function MecoDockManager(){
 
   function filteredRows(lado){ const list=app.lados[lado].rows; if(filterEstado==="TODOS") return list; return list.filter(r=>(r.ESTADO||"")===filterEstado); }
 
-  // Persistencia central (con token o API key)
+  // ----------------- Persistencia central -----------------
   async function uploadState(){
     try{
       setSyncMsg("Subiendo…");
@@ -373,7 +366,32 @@ export default function MecoDockManager(){
   }
   function doLogout(){ setAuth({token:null,user:null}); }
 
-  // Render
+  // ----------------- Confirmación/cancelación de edición MUELLE -----------------
+  function commitDock(lado, rowId, fallbackValue="") {
+    const tmp = (dockEdit[rowId] ?? "").trim();
+    const value = tmp; // permitir vacío -> limpia el muelle
+    // Si no se ha tocado, usa el fallback (valor actual de la fila)
+    const toSet = tmp === "" ? "" : value;
+
+    // Validar solo al confirmar
+    const ok = setField(lado, rowId, "MUELLE", toSet);
+    if (ok) {
+      setDockEdit(prev => {
+        const next = {...prev};
+        delete next[rowId];
+        return next;
+      });
+    }
+  }
+  function cancelDock(rowId) {
+    setDockEdit(prev => {
+      const next = {...prev};
+      delete next[rowId];
+      return next;
+    });
+  }
+
+  // --------------------------- Render ---------------------------------------
   return (
     <TooltipProvider>
       <div className="w-full min-h-screen p-3 md:p-5 bg-gradient-to-b from-slate-50 to-white">
@@ -398,8 +416,17 @@ export default function MecoDockManager(){
           </div>
         </header>
 
-        {/* Barra de resumen superior con SLA */}
-        <SummaryBar data={summaryData} onOpen={openSummary} />
+        {/* Línea superior de avisos SLA */}
+        <AlertStrip
+          waitCrit={summaryData.SLA_WAIT.crit}
+          waitWarn={summaryData.SLA_WAIT.warn}
+          topeCrit={summaryData.SLA_TOPE.crit}
+          topeWarn={summaryData.SLA_TOPE.warn}
+          onOpen={(type)=>setSummary({open:true,type})}
+        />
+
+        {/* Resumen */}
+        <SummaryBar data={summaryData} onOpen={(type)=>setSummary({open:true,type})} />
 
         {/* 2 columnas: principal + derecha */}
         <div className="grid gap-3 mt-3" style={{ gridTemplateColumns: "minmax(0,1fr) 290px" }}>
@@ -495,10 +522,16 @@ export default function MecoDockManager(){
                                                 {INCIDENTES.map(opt=><option key={opt} value={opt}>{opt}</option>)}
                                               </select>
                                             ) : isMuelle ? (
-                                              <input className="h-8 w-full border rounded px-2 bg-transparent text-sm"
-                                                value={(row[h]??"").toString()}
-                                                onChange={(e)=>setField(n,row.id,"MUELLE",e.target.value)}
-                                                onBlur={(e)=>{ const v=e.target.value.trim(); if(v!==(row[h]??"")) setField(n,row.id,"MUELLE",v); }}
+                                              // ------------- Campo MUELLE (edición libre + confirmar con Enter/blur) -------------
+                                              <input
+                                                className="h-8 w-full border rounded px-2 bg-white text-sm"
+                                                value={dockEdit[row.id] ?? (row[h] ?? "").toString()}
+                                                onChange={(e)=> setDockEdit(prev=>({...prev, [row.id]: e.target.value}))}
+                                                onBlur={()=> commitDock(n, row.id, (row[h] ?? ""))}
+                                                onKeyDown={(e)=>{
+                                                  if(e.key==="Enter"){ e.currentTarget.blur(); }
+                                                  if(e.key==="Escape"){ cancelDock(row.id); e.currentTarget.blur(); }
+                                                }}
                                                 placeholder="nº muelle"
                                               />
                                             ) : (
@@ -535,9 +568,19 @@ export default function MecoDockManager(){
         </div>
 
         {/* Drawer muelles */}
-        <DockDrawer app={app} dockPanel={dockPanel} setDockPanel={setDockPanel} updateRow={updateRow} setField={setField} />
+        <DockDrawer
+          app={app}
+          dockPanel={dockPanel}
+          setDockPanel={setDockPanel}
+          updateRow={updateRow}
+          setField={setField}
+          dockEdit={dockEdit}
+          setDockEdit={setDockEdit}
+          commitDock={commitDock}
+          cancelDock={cancelDock}
+        />
 
-        {/* Modal resumen (incluye SLA) */}
+        {/* Modal resumen */}
         <SummaryModal open={summary.open} type={summary.type} data={summaryData} onClose={closeSummary} />
 
         {/* Modal Login */}
@@ -607,7 +650,7 @@ function DockRight({app,setDockPanel,dockPanel}){
 }
 
 // ------------------------------ Drawer lateral ------------------------------
-function DockDrawer({app,dockPanel,setDockPanel,updateRow,setField}){
+function DockDrawer({app,dockPanel,setDockPanel,updateRow,setField,dockEdit,setDockEdit,commitDock,cancelDock}){
   return dockPanel.open && (
     <>
       <div className="fixed inset-0 bg-black/30 z-[9998]" onClick={()=>setDockPanel({open:false,dock:undefined,lado:undefined,rowId:undefined})}/>
@@ -635,7 +678,22 @@ function DockDrawer({app,dockPanel,setDockPanel,updateRow,setField}){
                   <InputX label="Salida real" value={(r["SALIDA REAL"]??"").toString()} onChange={(v)=>updateRow(lado,r.id,{"SALIDA REAL":v})} placeholder="hh:mm / ISO" />
                 </div>
                 <div className="grid grid-cols-2 gap-2">
-                  <InputX label="Muelle" value={(r["MUELLE"]??"").toString()} onChange={(v)=>setField(lado,r.id,"MUELLE",v)} placeholder="nº muelle" />
+                  {/* MUELLE con edición libre y confirmación */}
+                  <div>
+                    <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">Muelle</div>
+                    <input
+                      className="h-9 w-full border rounded px-2 bg-white text-sm"
+                      value={dockEdit[rowId] ?? (r["MUELLE"] ?? "").toString()}
+                      onChange={(e)=> setDockEdit(prev=>({...prev, [rowId]: e.target.value}))}
+                      onBlur={()=> commitDock(lado, rowId, (r["MUELLE"] ?? ""))}
+                      onKeyDown={(e)=>{
+                        if(e.key==="Enter"){ e.currentTarget.blur(); }
+                        if(e.key==="Escape"){ cancelDock(rowId); e.currentTarget.blur(); }
+                      }}
+                      placeholder="nº muelle"
+                    />
+                    <div className="text-[10px] text-muted-foreground mt-0.5">Permitidos: {DOCKS[0]}…{DOCKS[DOCKS.length-1]}</div>
+                  </div>
                   <InputX label="Precinto" value={(r["PRECINTO"]??"").toString()} onChange={(v)=>updateRow(lado,r.id,{"PRECINTO":v})} placeholder="Precinto" />
                 </div>
                 <div className="grid grid-cols-2 gap-2">
@@ -676,6 +734,46 @@ function SelectX({label,value,onChange,options}){ return (
   </div>
 );}
 
+/* ===================== LÍNEA SUPERIOR DE AVISOS (SLA) ===================== */
+function AlertStrip({ waitCrit, waitWarn, topeCrit, topeWarn, onOpen }) {
+  const hasAny = (waitCrit + waitWarn + topeCrit + topeWarn) > 0;
+  return (
+    <div className={`mb-3 ${hasAny ? "" : "opacity-70"}`}>
+      <div className="flex flex-wrap items-center gap-2 text-sm">
+        <span className="text-xs text-muted-foreground flex items-center gap-1">
+          <AlertTriangle className="w-4 h-4" /> Avisos SLA:
+        </span>
+
+        <button
+          onClick={()=>onOpen("SLA_WAIT")}
+          className="flex items-center gap-2 px-2 py-1 rounded-full bg-amber-100 text-amber-800 border border-amber-200 hover:bg-amber-200 transition"
+          title="Ver detalle · SLA Espera"
+        >
+          <span className="font-medium">Espera</span>
+          <span className="text-[11px] px-1 rounded bg-red-200 text-red-800">Crit: {waitCrit}</span>
+          <span className="text-[11px] px-1 rounded bg-amber-200 text-amber-800">Aviso: {waitWarn}</span>
+        </button>
+
+        <button
+          onClick={()=>onOpen("SLA_TOPE")}
+          className="flex items-center gap-2 px-2 py-1 rounded-full bg-red-100 text-red-800 border border-red-200 hover:bg-red-200 transition"
+          title="Ver detalle · SLA Tope"
+        >
+          <span className="font-medium">Tope</span>
+          <span className="text-[11px] px-1 rounded bg-red-300 text-red-900">Crit: {topeCrit}</span>
+          <span className="text-[11px] px-1 rounded bg-amber-200 text-amber-800">Aviso: {topeWarn}</span>
+        </button>
+
+        {!hasAny && (
+          <span className="text-xs text-emerald-700 bg-emerald-100 border border-emerald-200 px-2 py-0.5 rounded-full">
+            Sin avisos SLA en este momento
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /* ==================== Barra de resumen (con SLA) & Modal =================== */
 function SummaryBar({data,onOpen}){
   const cards = [
@@ -683,7 +781,6 @@ function SummaryBar({data,onOpen}){
     { key:"CARGANDO", title:"Cargando", count:data.CARGANDO.length, color:"bg-amber-500", sub:"Camiones cargando" },
     { key:"ANULADO", title:"Anulado", count:data.ANULADO.length, color:"bg-red-600", sub:"Camiones anulados" },
     { key:"INCIDENCIAS", title:"Incidencias", count:data.INCIDENCIAS.length, color:"bg-indigo-600", sub:"Con incidencia" },
-    // SLA cards
     { key:"SLA_WAIT", title:"SLA Espera", count:data.SLA_WAIT.crit + data.SLA_WAIT.warn, color:"bg-amber-600", sub:"Crit / Aviso", badgeL:data.SLA_WAIT.crit, badgeR:data.SLA_WAIT.warn },
     { key:"SLA_TOPE", title:"SLA Tope", count:data.SLA_TOPE.crit + data.SLA_TOPE.warn, color:"bg-red-700", sub:"Crit / Aviso", badgeL:data.SLA_TOPE.crit, badgeR:data.SLA_TOPE.warn },
   ];
