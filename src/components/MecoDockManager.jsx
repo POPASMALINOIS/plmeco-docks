@@ -4,19 +4,35 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { Download, FileUp, Plus, Trash2, Upload, RefreshCw, X } from "lucide-react";
+import { Download, FileUp, Plus, Trash2, Upload, RefreshCw, LogIn, LogOut, X, AlertTriangle } from "lucide-react";
 import * as XLSX from "xlsx";
 import { motion } from "framer-motion";
 
 /**
  * PLMECO – Gestión de Muelles (WEB)
- * Novedades:
- * - Barra superior de resumen: OK (verde), CARGANDO (naranja), ANULADO (rojo), INCIDENCIAS (azul).
- *   * Click en una casilla => panel con la lista agrupada (todos los lados).
- * - Validación de MUELLE y aviso de conflictos multi-lado.
- * - Persistencia central opcional (window.MECO_API_URL / MECO_API_KEY).
- * - (Se mantiene todo lo que ya tenías: importación, colores de fila completos, reordenación, exportaciones, etc.)
+ * Novedades en esta versión:
+ * - ALERTAS SLA:
+ *   * Espera en muelle (muelle asignado sin Llegada Real): warn/crit por minutos.
+ *   * Salida Tope: warn previo y crítico al superar la hora tope sin Salida Real.
+ *   * Contorno de fila ámbar/rojo + tooltip con el motivo.
+ * - PERSISTENCIA CENTRAL con usuarios:
+ *   * Login/Logout (POST /login -> {token,user}), guarda token en localStorage.
+ *   * Subir/Cargar estado (POST/GET /state) usando Authorization: Bearer.
+ *   * Soporta MECO_API_KEY si tu backend usa key en vez de login.
+ *
+ * Mantiene:
+ * - Importación inteligente, validación de muelles y conflictos multi-lado,
+ *   reordenación de columnas, exportaciones CSV/XLSX, barra de resumen, etc.
  */
+
+/* ========================= PARÁMETROS SLA AJUSTABLES ====================== */
+// Espera en muelle (minutos) — muelle asignado y sin "LLEGADA REAL"
+const SLA_WAIT_WARN_MIN = 15; // aviso
+const SLA_WAIT_CRIT_MIN = 30; // crítico
+
+// Salida tope — minutos para aviso previo, y crítico si ya pasado
+const SLA_TOPE_WARN_MIN = 15; // si faltan <= 15' para Salida Tope => aviso
+/* ========================================================================== */
 
 // --------------------------- Constantes generales ---------------------------
 const DOCKS = [
@@ -129,7 +145,7 @@ function coerceCell(v) {
   return String(v).replace(/\r?\n+/g, " ").replace(/\s{2,}/g, " ").trim();
 }
 
-// Normaliza ESTADO desde Excel
+// Normaliza ESTADO desde Excel:
 function normalizeEstado(v) {
   const raw = String(v ?? "").trim();
   if (raw === "" || raw === "*" || raw === "-" || /^N\/?A$/i.test(raw)) return "";
@@ -138,6 +154,39 @@ function normalizeEstado(v) {
   if (up === "CARGANDO") return "CARGANDO";
   if (up === "ANULADO") return "ANULADO";
   return up;
+}
+
+// Parse flexible: "hh:mm", "dd/mm/yyyy hh:mm", ISO, etc.
+function parseFlexibleToDate(s) {
+  const str = (s ?? "").toString().trim();
+  if (!str) return null;
+
+  // hh:mm -> hoy
+  const hm = /^(\d{1,2}):(\d{2})$/.exec(str);
+  if (hm) {
+    const now = new Date();
+    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate(), Number(hm[1]), Number(hm[2]), 0, 0);
+    return d;
+  }
+  // dd/mm/yyyy hh:mm (o dd/mm/yy)
+  const dmyhm = /^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})[ T](\d{1,2}):(\d{2})$/.exec(str);
+  if (dmyhm) {
+    const dd = Number(dmyhm[1]);
+    const mm = Number(dmyhm[2]) - 1;
+    let yy = Number(dmyhm[3]);
+    if (yy < 100) yy += 2000;
+    const hh = Number(dmyhm[4]);
+    const mi = Number(dmyhm[5]);
+    return new Date(yy, mm, dd, hh, mi, 0, 0);
+  }
+  // ISO / Date parseable
+  const ts = Date.parse(str);
+  if (!Number.isNaN(ts)) return new Date(ts);
+
+  return null;
+}
+function minutesDiff(a, b) {
+  return Math.round((a.getTime() - b.getTime()) / 60000);
 }
 
 // Autoancho por contenido (ancho en "ch"); MATRÍCULA con un plus
@@ -257,7 +306,7 @@ function rowAccentBorder(estado) {
   return "";
 }
 
-// ---------------------- Validación y conflictos de muelle -------------------
+/* ======================= Validación & conflicto de muelle ================== */
 function isValidDockValue(val) {
   if (val === "" || val == null) return true; // permitir vacío
   const num = Number(String(val).trim());
@@ -290,6 +339,83 @@ function checkDockConflict(app, dockValue, currentLado, currentRowId) {
   return { conflict: false };
 }
 
+/* =============================== SLA helpers =============================== */
+// Marca el timestamp cuando se asigna MUELLE por primera vez o cambia de valor.
+function withDockAssignStamp(prevRow, nextRow) {
+  const prevDock = (prevRow?.MUELLE ?? "").toString().trim();
+  const nextDock = (nextRow?.MUELLE ?? "").toString().trim();
+  if (nextDock && (!prevDock || prevDock !== nextDock)) {
+    return { ...nextRow, _ASIG_TS: new Date().toISOString() };
+  }
+  return nextRow;
+}
+
+/**
+ * Devuelve información SLA para una fila:
+ * - espera: muelle asignado sin llegada real
+ * - tope: sin salida real y con SALIDA TOPE próxima/pasada
+ * result = {
+ *   wait: { level: "warn"|"crit"|null, minutes: n } ,
+ *   tope: { level: "warn"|"crit"|null, diff: minutosDesdeTopePositivosSiPasado }
+ *   tip:  string resumen legible
+ * }
+ */
+function getSLA(row) {
+  const now = new Date();
+
+  // Espera (muelle asignado y sin llegada real)
+  let wait = { level: null, minutes: 0 };
+  const muelle = (row.MUELLE || "").toString().trim();
+  const llegadaReal = (row["LLEGADA REAL"] || "").toString().trim();
+
+  if (muelle && !llegadaReal) {
+    // calculamos desde _ASIG_TS si existe; si no, como fallback usamos LLEGADA teórica si tiene hora de hoy
+    let ref = row._ASIG_TS ? new Date(row._ASIG_TS) : null;
+    if (!ref && row.LLEGADA) {
+      const d = parseFlexibleToDate(row.LLEGADA);
+      if (d) ref = d;
+    }
+    if (ref) {
+      const m = minutesDiff(now, ref);
+      wait.minutes = m;
+      if (m >= SLA_WAIT_CRIT_MIN) wait.level = "crit";
+      else if (m >= SLA_WAIT_WARN_MIN) wait.level = "warn";
+    }
+  }
+
+  // Salida Tope (sin salida real)
+  let tope = { level: null, diff: 0 };
+  const salidaReal = (row["SALIDA REAL"] || "").toString().trim();
+  const salidaTope = parseFlexibleToDate(row["SALIDA TOPE"] || "");
+  if (!salidaReal && salidaTope) {
+    const diffMin = minutesDiff(now, salidaTope); // positivo si now > tope
+    tope.diff = diffMin;
+    if (diffMin > 0) tope.level = "crit";
+    else if (diffMin >= -SLA_TOPE_WARN_MIN) tope.level = "warn"; // está cerca
+  }
+
+  // Mensaje resumen
+  const parts = [];
+  if (wait.level) parts.push(`Espera en muelle ${wait.minutes} min`);
+  if (tope.level === "crit") parts.push(`Salida tope superada (+${tope.diff} min)`);
+  else if (tope.level === "warn") parts.push(`Salida tope próxima (${Math.abs(tope.diff)} min)`);
+  const tip = parts.join(" · ");
+
+  return { wait, tope, tip };
+}
+
+function slaOutlineClasses(sla) {
+  const levels = ["crit", "warn"];
+  for (const lv of levels) {
+    if (sla.tope.level === lv || sla.wait.level === lv) {
+      return lv === "crit"
+        ? "outline outline-2 outline-red-500"
+        : "outline outline-2 outline-amber-400";
+    }
+  }
+  return "";
+}
+
 // ------------------------------- Componente ---------------------------------
 export default function MecoDockManager() {
   const [app, setApp] = useLocalStorage("meco-app", {
@@ -303,7 +429,13 @@ export default function MecoDockManager() {
   const [importInfo, setImportInfo] = useState(null);
   const [syncMsg, setSyncMsg] = useState("");
 
-  // NUEVO: estado del panel de resumen
+  // Auth (persistencia central con usuarios)
+  const [auth, setAuth] = useLocalStorage("meco-auth", { token: null, user: null });
+  const [loginOpen, setLoginOpen] = useState(false);
+  const emailRef = useRef(null);
+  const passRef = useRef(null);
+
+  // Barra de resumen (la mantengo, por si ya la estás usando)
   const [summary, setSummary] = useState({ open: false, type: null });
 
   // Orden columnas (drag&drop)
@@ -322,9 +454,7 @@ export default function MecoDockManager() {
   const summaryData = useMemo(() => {
     const all = [];
     for (const lado of Object.keys(app.lados)) {
-      for (const r of app.lados[lado].rows) {
-        all.push({ ...r, _lado: lado });
-      }
+      for (const r of app.lados[lado].rows) all.push({ ...r, _lado: lado });
     }
     const is = (v, x) => (String(v || "").toUpperCase() === x);
     return {
@@ -336,17 +466,17 @@ export default function MecoDockManager() {
     };
   }, [app]);
 
-  function openSummary(type) {
-    setSummary({ open: true, type });
-  }
-  function closeSummary() {
-    setSummary({ open: false, type: null });
-  }
+  function openSummary(type) { setSummary({ open: true, type }); }
+  function closeSummary() { setSummary({ open: false, type: null }); }
 
-  // --- Update helpers con validación de MUELLE y conflictos ---
+  // --- Update helpers con validación MUELLE, conflictos y sello de asignación ---
   function updateRowDirect(lado, id, patch) {
     setApp((prev) => {
-      const rows = prev.lados[lado].rows.map((r) => (r.id === id ? { ...r, ...patch } : r));
+      const rows = prev.lados[lado].rows.map((r) => {
+        if (r.id !== id) return r;
+        const next = { ...r, ...patch };
+        return withDockAssignStamp(r, next);
+      });
       return { ...prev, lados: { ...prev.lados, [lado]: { ...prev.lados[lado], rows } } };
     });
   }
@@ -492,15 +622,17 @@ export default function MecoDockManager() {
       setSyncMsg("Subiendo…");
       const base = window.MECO_API_URL;
       if (!base) { alert("Configura window.MECO_API_URL para usar la persistencia central."); setSyncMsg(""); return; }
-      const key = window.MECO_API_KEY;
+      const headers = {
+        "Content-Type": "application/json",
+        ...(window.MECO_API_KEY ? { Authorization: `Bearer ${window.MECO_API_KEY}` } : {}),
+        ...(auth?.token ? { Authorization: `Bearer ${auth.token}` } : {}),
+      };
       const res = await fetch(new URL("/state", base), {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(key ? { Authorization: `Bearer ${key}` } : {}),
-        },
-        body: JSON.stringify({ state: app }),
+        headers,
+        body: JSON.stringify({ state: app, by: auth?.user || null }),
       });
+      if (res.status === 401) { alert("No autorizado. Inicia sesión."); setSyncMsg(""); return; }
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       setSyncMsg("Subido correctamente.");
       setTimeout(()=>setSyncMsg(""), 2000);
@@ -515,10 +647,12 @@ export default function MecoDockManager() {
       setSyncMsg("Cargando…");
       const base = window.MECO_API_URL;
       if (!base) { alert("Configura window.MECO_API_URL para usar la persistencia central."); setSyncMsg(""); return; }
-      const key = window.MECO_API_KEY;
-      const res = await fetch(new URL("/state", base), {
-        headers: { ...(key ? { Authorization: `Bearer ${key}` } : {}) }
-      });
+      const headers = {
+        ...(window.MECO_API_KEY ? { Authorization: `Bearer ${window.MECO_API_KEY}` } : {}),
+        ...(auth?.token ? { Authorization: `Bearer ${auth.token}` } : {}),
+      };
+      const res = await fetch(new URL("/state", base), { headers });
+      if (res.status === 401) { alert("No autorizado. Inicia sesión."); setSyncMsg(""); return; }
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
       if (json && json.state && json.state.lados) {
@@ -534,6 +668,29 @@ export default function MecoDockManager() {
       alert("Error al cargar el estado del servidor.");
       setSyncMsg("");
     }
+  }
+
+  async function doLogin(email, password) {
+    try {
+      const base = window.MECO_API_URL;
+      if (!base) { alert("Configura window.MECO_API_URL para login."); return; }
+      const res = await fetch(new URL("/login", base), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+      if (!res.ok) { alert("Login incorrecto."); return; }
+      const json = await res.json();
+      if (!json?.token) { alert("Respuesta de login inválida."); return; }
+      setAuth({ token: json.token, user: json.user || { name: email, role: "user" } });
+      setLoginOpen(false);
+    } catch (e) {
+      console.error(e);
+      alert("Error de red en login.");
+    }
+  }
+  function doLogout() {
+    setAuth({ token: null, user: null });
   }
 
   // --------------------------- DnD Handlers (HTML5) -------------------------
@@ -580,13 +737,26 @@ export default function MecoDockManager() {
       <div className="w-full min-h-screen p-3 md:p-5 bg-gradient-to-b from-slate-50 to-white">
         <header className="flex items-center gap-2 justify-between mb-3">
           <h1 className="text-2xl font-bold tracking-tight">PLMECO · Gestión de Muelles</h1>
-          <div className="text-right">
-            <div className="text-xs text-muted-foreground">Fecha y hora</div>
-            <div className="font-medium">{clock}</div>
+          <div className="flex items-center gap-3">
+            {auth?.user ? (
+              <>
+                <div className="text-sm">
+                  <div className="leading-tight font-medium">{auth.user.name || "Usuario"}</div>
+                  <div className="text-xs text-muted-foreground">{auth.user.role || "user"}</div>
+                </div>
+                <Button size="sm" variant="outline" onClick={doLogout}><LogOut className="w-4 h-4 mr-2" />Salir</Button>
+              </>
+            ) : (
+              <Button size="sm" onClick={()=>setLoginOpen(true)}><LogIn className="w-4 h-4 mr-2" />Entrar</Button>
+            )}
+            <div className="text-right">
+              <div className="text-xs text-muted-foreground">Fecha y hora</div>
+              <div className="font-medium">{clock}</div>
+            </div>
           </div>
         </header>
 
-        {/* NUEVO: Barra de resumen superior */}
+        {/* Barra de resumen superior (si la estás usando) */}
         <SummaryBar data={summaryData} onOpen={openSummary} />
 
         {/* 2 columnas: principal + derecha 290px */}
@@ -650,9 +820,7 @@ export default function MecoDockManager() {
                     onExportCSV={() => exportCSV(active, app, columnOrder)}
                     onExportXLSX={() => exportXLSX(active, app, columnOrder)}
                     onResetCache={() => {
-                      try {
-                        localStorage.removeItem("meco-app");
-                      } catch {}
+                      try { localStorage.removeItem("meco-app"); } catch {}
                       window.location.reload();
                     }}
                     onUploadState={uploadState}
@@ -690,63 +858,75 @@ export default function MecoDockManager() {
                           <div>
                             {filteredRows(n).map((row) => {
                               const estado = (row.ESTADO || "").toString();
+                              const sla = getSLA(row);
+                              const outline = slaOutlineClasses(sla);
+                              const hasSLA = sla.wait.level || sla.tope.level;
                               return (
-                                <div
-                                  key={row.id}
-                                  className={`grid border-t ${rowColorByEstado(estado)} ${rowAccentBorder(estado)} border-slate-200`}
-                                  style={{ gridTemplateColumns: gridTemplate }}
-                                >
-                                  {columnOrder.map((h) => {
-                                    const isEstado = h === "ESTADO";
-                                    const isInc    = h === "INCIDENCIAS";
-                                    const isMuelle = h === "MUELLE";
-                                    return (
-                                      <div key={h} className="p-1 border-r border-slate-100/60 flex items-center">
-                                        {isEstado ? (
-                                          <select
-                                            className="h-8 w-full border rounded px-2 bg-transparent text-sm"
-                                            value={(row.ESTADO ?? "").toString()}
-                                            onChange={(e)=>updateRow(n, row.id, { ESTADO: e.target.value })}
-                                          >
-                                            <option value="">Seleccionar</option>
-                                            {CAMION_ESTADOS.map(opt => <option key={opt} value={opt}>{opt}</option>)}
-                                          </select>
-                                        ) : isInc ? (
-                                          <select
-                                            className="h-8 w-full border rounded px-2 bg-transparent text-sm"
-                                            value={(row.INCIDENCIAS ?? "").toString()}
-                                            onChange={(e)=>updateRow(n, row.id, { INCIDENCIAS: e.target.value })}
-                                          >
-                                            <option value="">Seleccionar</option>
-                                            {INCIDENTES.map(opt => <option key={opt} value={opt}>{opt}</option>)}
-                                          </select>
-                                        ) : isMuelle ? (
-                                          <input
-                                            className="h-8 w-full border rounded px-2 bg-transparent text-sm"
-                                            value={(row[h] ?? "").toString()}
-                                            onChange={(e) => setField(n, row.id, "MUELLE", e.target.value)}
-                                            onBlur={(e) => {
-                                              const v = e.target.value.trim();
-                                              if (v !== (row[h] ?? "")) setField(n, row.id, "MUELLE", v);
-                                            }}
-                                            placeholder="nº muelle"
-                                          />
-                                        ) : (
-                                          <input
-                                            className="h-8 w-full border rounded px-2 bg-transparent text-sm"
-                                            value={(row[h] ?? "").toString()}
-                                            onChange={(e) => updateRow(n, row.id, { [h]: e.target.value })}
-                                          />
-                                        )}
+                                <Tooltip key={row.id}>
+                                  <TooltipTrigger asChild>
+                                    <div
+                                      className={`grid border-t ${rowColorByEstado(estado)} ${rowAccentBorder(estado)} border-slate-200 ${outline}`}
+                                      style={{ gridTemplateColumns: gridTemplate }}
+                                    >
+                                      {columnOrder.map((h) => {
+                                        const isEstado = h === "ESTADO";
+                                        const isInc    = h === "INCIDENCIAS";
+                                        const isMuelle = h === "MUELLE";
+                                        return (
+                                          <div key={h} className="p-1 border-r border-slate-100/60 flex items-center">
+                                            {isEstado ? (
+                                              <select
+                                                className="h-8 w-full border rounded px-2 bg-transparent text-sm"
+                                                value={(row.ESTADO ?? "").toString()}
+                                                onChange={(e)=>updateRow(n, row.id, { ESTADO: e.target.value })}
+                                              >
+                                                <option value="">Seleccionar</option>
+                                                {CAMION_ESTADOS.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                                              </select>
+                                            ) : isInc ? (
+                                              <select
+                                                className="h-8 w-full border rounded px-2 bg-transparent text-sm"
+                                                value={(row.INCIDENCIAS ?? "").toString()}
+                                                onChange={(e)=>updateRow(n, row.id, { INCIDENCIAS: e.target.value })}
+                                              >
+                                                <option value="">Seleccionar</option>
+                                                {INCIDENTES.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                                              </select>
+                                            ) : isMuelle ? (
+                                              <input
+                                                className="h-8 w-full border rounded px-2 bg-transparent text-sm"
+                                                value={(row[h] ?? "").toString()}
+                                                onChange={(e) => setField(n, row.id, "MUELLE", e.target.value)}
+                                                onBlur={(e) => {
+                                                  const v = e.target.value.trim();
+                                                  if (v !== (row[h] ?? "")) setField(n, row.id, "MUELLE", v);
+                                                }}
+                                                placeholder="nº muelle"
+                                              />
+                                            ) : (
+                                              <input
+                                                className="h-8 w-full border rounded px-2 bg-transparent text-sm"
+                                                value={(row[h] ?? "").toString()}
+                                                onChange={(e) => updateRow(n, row.id, { [h]: e.target.value })}
+                                              />
+                                            )}
+                                          </div>
+                                        );
+                                      })}
+                                      <div className="p-1 flex items-center justify-center gap-1">
+                                        {hasSLA && <AlertTriangle className={`w-4 h-4 ${sla.tope.level === "crit" || sla.wait.level === "crit" ? "text-red-600" : "text-amber-500"}`} />}
+                                        <Button size="icon" variant="ghost" onClick={() => removeRow(n, row.id)}>
+                                          <X className="w-4 h-4" />
+                                        </Button>
                                       </div>
-                                    );
-                                  })}
-                                  <div className="p-1 flex items-center justify-center">
-                                    <Button size="icon" variant="ghost" onClick={() => removeRow(n, row.id)}>
-                                      <X className="w-4 h-4" />
-                                    </Button>
-                                  </div>
-                                </div>
+                                    </div>
+                                  </TooltipTrigger>
+                                  {hasSLA && (
+                                    <TooltipContent>
+                                      <p className="max-w-sm text-sm">{sla.tip}</p>
+                                    </TooltipContent>
+                                  )}
+                                </Tooltip>
                               );
                             })}
                           </div>
@@ -766,8 +946,39 @@ export default function MecoDockManager() {
         {/* Drawer lateral (inputs 100% interactivos) */}
         <DockDrawer app={app} dockPanel={dockPanel} setDockPanel={setDockPanel} updateRow={updateRow} setField={setField} />
 
-        {/* NUEVO: Panel de resumen */}
+        {/* Panel de resumen (si lo usas) */}
         <SummaryModal open={summary.open} type={summary.type} data={summaryData} onClose={closeSummary} />
+
+        {/* Modal de Login */}
+        {loginOpen && (
+          <>
+            <div className="fixed inset-0 bg-black/30 z-[9998]" onClick={()=>setLoginOpen(false)} />
+            <div className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-[9999] w-[92vw] max-w-md bg-white rounded-2xl shadow-2xl border overflow-hidden">
+              <div className="px-4 py-3 border-b flex items-center justify-between">
+                <div className="font-semibold">Iniciar sesión</div>
+                <Button size="icon" variant="ghost" onClick={()=>setLoginOpen(false)}>
+                  <X className="w-5 h-5" />
+                </Button>
+              </div>
+              <div className="p-4 space-y-3">
+                <div>
+                  <div className="text-xs text-muted-foreground mb-1">Email</div>
+                  <input ref={emailRef} className="h-9 w-full border rounded px-2" type="email" placeholder="usuario@empresa.com" />
+                </div>
+                <div>
+                  <div className="text-xs text-muted-foreground mb-1">Contraseña</div>
+                  <input ref={passRef} className="h-9 w-full border rounded px-2" type="password" placeholder="••••••••" />
+                </div>
+                <div className="flex justify-end gap-2">
+                  <Button variant="outline" onClick={()=>setLoginOpen(false)}>Cancelar</Button>
+                  <Button onClick={()=>doLogin(emailRef.current?.value || "", passRef.current?.value || "")}>
+                    <LogIn className="w-4 h-4 mr-2" /> Entrar
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </>
+        )}
 
         <footer className="mt-4 text-xs text-muted-foreground flex items-center justify-between">
           <div>Estados camión: <Badge className="bg-emerald-600">OK</Badge> · <Badge className="bg-amber-500">CARGANDO</Badge> · <Badge className="bg-red-600">ANULADO</Badge></div>
@@ -993,8 +1204,7 @@ function SelectX({ label, value, onChange, options }) {
   );
 }
 
-/* ========= NUEVOS COMPONENTES: SummaryBar & SummaryModal ========= */
-
+/* ========= Barra de resumen & Modal (si ya la utilizas) ========= */
 function SummaryBar({ data, onOpen }) {
   const cards = [
     { key: "OK", title: "OK", count: data.OK.length, color: "bg-emerald-600", sub: "Camiones en OK" },
