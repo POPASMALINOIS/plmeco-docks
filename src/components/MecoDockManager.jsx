@@ -10,10 +10,10 @@ import { motion } from "framer-motion";
 
 /**
  * PLMECO – Gestión de Muelles (WEB)
- * Esta versión añade:
- * - Reordenación de columnas por drag&drop en los encabezados.
- * - Persistencia del orden en localStorage ("meco-colorder").
- * - Exportación CSV usa el orden actual.
+ * Cambios:
+ * - deriveDocks con prioridad global OCUPADO > ESPERA > LIBRE para consolidar varios Lados.
+ * - Filas coloreadas por ESTADO: OK (verde), CARGANDO (amarillo), ANULADO (rojo).
+ * - Mantiene reordenación de columnas por drag&drop con persistencia.
  */
 
 // --------------------------- Constantes generales ---------------------------
@@ -182,29 +182,50 @@ function useRealtimeSync(state, setState) {
 }
 
 // ---------------------------- Derivación de muelles -------------------------
+const PRIORITY = { "LIBRE": 0, "ESPERA": 1, "OCUPADO": 2 };
+
+function betterDockState(current, incoming) {
+  // Devuelve el estado con mayor prioridad
+  if (!current) return incoming;
+  return PRIORITY[incoming.state] > PRIORITY[current.state] ? incoming : current;
+}
+
 function deriveDocks(lados) {
+  // Calcula el estado consolidado de cada muelle a través de TODOS los lados
   const dockMap = new Map();
-  DOCKS.forEach((d) => dockMap.set(d, { state: "LIBRE" }));
+  DOCKS.forEach((d) => dockMap.set(d, { state: "LIBRE" })); // base
+
   Object.keys(lados).forEach((ladoName) => {
-    lados[ladoName].rows.forEach((row) => {
-      const muNum = Number(String(row.MUELLE ?? "").trim());
+    (lados[ladoName]?.rows || []).forEach((row) => {
+      const muStr = String(row.MUELLE ?? "").trim();
+      const muNum = Number(muStr);
       if (!Number.isFinite(muNum) || !DOCKS.includes(muNum)) return;
+
       const llegadaReal = (row["LLEGADA REAL"] || "").trim();
       const salidaReal  = (row["SALIDA REAL"]  || "").trim();
+
+      // Regla: SALIDA REAL => libera.
+      // Si no hay salida:
+      //   - con LLEGADA REAL => OCUPADO
+      //   - sin LLEGADA REAL => ESPERA (reservado)
       let state = "ESPERA";
       if (llegadaReal) state = "OCUPADO";
       if (salidaReal)  state = "LIBRE";
-      if (state !== "LIBRE") dockMap.set(muNum, { state, row, lado: ladoName });
-      else {
-        if (dockMap.has(muNum)) {
-          const prev = dockMap.get(muNum);
-          if (prev.state !== "OCUPADO") dockMap.set(muNum, { state: "LIBRE" });
-        }
-      }
+
+      const incoming = state === "LIBRE"
+        ? { state: "LIBRE" }
+        : { state, row, lado: ladoName };
+
+      const prev = dockMap.get(muNum);
+      // Nunca dejar que LIBRE pise un no-LIBRE; elegir la mejor prioridad
+      const next = state === "LIBRE" ? (prev || { state: "LIBRE" }) : betterDockState(prev, incoming);
+      dockMap.set(muNum, next);
     });
   });
+
   return dockMap;
 }
+
 function dockColor(state) {
   if (state === "LIBRE")  return "bg-emerald-500";
   if (state === "ESPERA") return "bg-amber-500";
@@ -214,6 +235,16 @@ function estadoBadgeColor(estado) {
   if (estado === "ANULADO")  return "bg-red-600";
   if (estado === "CARGANDO") return "bg-amber-500";
   return "bg-emerald-600";
+}
+function rowColorByEstado(estado) {
+  if (estado === "ANULADO")  return "bg-red-100";
+  if (estado === "CARGANDO") return "bg-amber-100";
+  return "bg-emerald-100"; // OK o vacío -> verde
+}
+function rowAccentBorder(estado) {
+  if (estado === "ANULADO")  return "border-l-4 border-red-400";
+  if (estado === "CARGANDO") return "border-l-4 border-amber-400";
+  return "border-l-4 border-emerald-400";
 }
 
 // ------------------------------- Componente ---------------------------------
@@ -228,7 +259,7 @@ export default function MecoDockManager() {
   const [debugOpen, setDebugOpen] = useState(false);
   const [importInfo, setImportInfo] = useState(null);
 
-  // <<< Orden de columnas con persistencia >>>
+  // Orden columnas (drag&drop)
   const [columnOrder, setColumnOrder] = useLocalStorage("meco-colorder", DEFAULT_ORDER);
 
   // DnD estado
@@ -316,7 +347,7 @@ export default function MecoDockManager() {
         seenHeaders.add(k);
         obj[k] = coerceCell(row[kRaw]);
       });
-      // Aseguramos todas las keys esperadas (aunque no se muestren primero)
+      // aseguramos todas las keys esperadas
       for (const h of EXPECTED_KEYS) if (!(h in obj)) obj[h] = "";
       const keysMin = ["TRANSPORTISTA","MATRICULA","DESTINO","LLEGADA","SALIDA","OBSERVACIONES"];
       const allEmpty = keysMin.every(k => String(obj[k] || "").trim() === "");
@@ -489,48 +520,55 @@ export default function MecoDockManager() {
 
                           {/* Filas */}
                           <div>
-                            {filteredRows(n).map((row) => (
-                              <div key={row.id} className="grid bg-white border-t border-slate-200" style={{ gridTemplateColumns: gridTemplate }}>
-                                {columnOrder.map((h) => {
-                                  const isEstado = h === "ESTADO";
-                                  const isInc    = h === "INCIDENCIAS";
-                                  return (
-                                    <div key={h} className="p-1 border-r border-slate-100 flex items-center">
-                                      {isEstado ? (
-                                        <select
-                                          className="h-8 w-full border rounded px-2 bg-white text-sm"
-                                          value={(row.ESTADO ?? "").toString()}
-                                          onChange={(e)=>updateRow(n, row.id, { ESTADO: e.target.value })}
-                                        >
-                                          <option value="">Seleccionar</option>
-                                          {CAMION_ESTADOS.map(opt => <option key={opt} value={opt}>{opt}</option>)}
-                                        </select>
-                                      ) : isInc ? (
-                                        <select
-                                          className="h-8 w-full border rounded px-2 bg-white text-sm"
-                                          value={(row.INCIDENCIAS ?? "").toString()}
-                                          onChange={(e)=>updateRow(n, row.id, { INCIDENCIAS: e.target.value })}
-                                        >
-                                          <option value="">Seleccionar</option>
-                                          {INCIDENTES.map(opt => <option key={opt} value={opt}>{opt}</option>)}
-                                        </select>
-                                      ) : (
-                                        <input
-                                          className="h-8 w-full border rounded px-2 bg-white text-sm"
-                                          value={(row[h] ?? "").toString()}
-                                          onChange={(e) => updateRow(n, row.id, { [h]: e.target.value })}
-                                        />
-                                      )}
-                                    </div>
-                                  );
-                                })}
-                                <div className="p-1 flex items-center justify-center">
-                                  <Button size="icon" variant="ghost" onClick={() => removeRow(n, row.id)}>
-                                    <X className="w-4 h-4" />
-                                  </Button>
+                            {filteredRows(n).map((row) => {
+                              const estado = (row.ESTADO || "OK").toString();
+                              return (
+                                <div
+                                  key={row.id}
+                                  className={`grid border-t ${rowColorByEstado(estado)} ${rowAccentBorder(estado)} border-slate-200`}
+                                  style={{ gridTemplateColumns: gridTemplate }}
+                                >
+                                  {columnOrder.map((h) => {
+                                    const isEstado = h === "ESTADO";
+                                    const isInc    = h === "INCIDENCIAS";
+                                    return (
+                                      <div key={h} className="p-1 border-r border-slate-100/60 flex items-center">
+                                        {isEstado ? (
+                                          <select
+                                            className="h-8 w-full border rounded px-2 bg-white/90 text-sm"
+                                            value={(row.ESTADO ?? "").toString()}
+                                            onChange={(e)=>updateRow(n, row.id, { ESTADO: e.target.value })}
+                                          >
+                                            <option value="">Seleccionar</option>
+                                            {CAMION_ESTADOS.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                                          </select>
+                                        ) : isInc ? (
+                                          <select
+                                            className="h-8 w-full border rounded px-2 bg-white/90 text-sm"
+                                            value={(row.INCIDENCIAS ?? "").toString()}
+                                            onChange={(e)=>updateRow(n, row.id, { INCIDENCIAS: e.target.value })}
+                                          >
+                                            <option value="">Seleccionar</option>
+                                            {INCIDENTES.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                                          </select>
+                                        ) : (
+                                          <input
+                                            className="h-8 w-full border rounded px-2 bg-white/90 text-sm"
+                                            value={(row[h] ?? "").toString()}
+                                            onChange={(e) => updateRow(n, row.id, { [h]: e.target.value })}
+                                          />
+                                        )}
+                                      </div>
+                                    );
+                                  })}
+                                  <div className="p-1 flex items-center justify-center">
+                                    <Button size="icon" variant="ghost" onClick={() => removeRow(n, row.id)}>
+                                      <X className="w-4 h-4" />
+                                    </Button>
+                                  </div>
                                 </div>
-                              </div>
-                            ))}
+                              );
+                            })}
                           </div>
                         </div>
                       </div>
@@ -802,7 +840,7 @@ function ToolbarX({ onImport, onAddRow, onClear, filterEstado, setFilterEstado, 
           onChange={(e)=> setFilterEstado(e.target.value || "TODOS")}
         >
           <option value="">Todos</option>
-          {CAMION_ESTADOS.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+        {CAMION_ESTADOS.map(opt => <option key={opt} value={opt}>{opt}</option>)}
         </select>
       </div>
     </div>
