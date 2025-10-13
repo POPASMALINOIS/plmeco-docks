@@ -11,7 +11,7 @@ import { motion } from "framer-motion";
 /**
  * PLMECO – Gestión de Muelles (WEB)
  * Esta versión incluye:
- * - Respeto estricto de ESTADO al importar (vacío/*/-/N/A => vacío, no "OK").
+ * - Respeto estricto de ESTADO al importar (vacío, asterisco "*", guion "-", "N/A" => vacío; no se fuerza "OK").
  * - Filas coloreadas solo si ESTADO = OK/CARGANDO/ANULADO.
  * - Consolidación multi-lado de muelles con prioridad OCUPADO > ESPERA > LIBRE.
  * - Reordenación de columnas por drag&drop con persistencia (meco-colorder).
