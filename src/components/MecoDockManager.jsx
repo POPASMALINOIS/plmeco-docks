@@ -37,7 +37,7 @@ const DEFAULT_ORDER = [
 ];
 const EXPECTED_KEYS = [...new Set([...BASE_HEADERS, ...EXTRA_HEADERS])];
 
-// --------------------------- Utilidades -------------------------------------
+// ----- utilidades -----
 function norm(s) {
   return (s ?? "")
     .toString().replace(/\r?\n+/g, " ").replace(/\s{2,}/g, " ")
@@ -76,9 +76,28 @@ function parseFlexibleToDate(s){
 function minutesDiff(a,b){ return Math.round((a.getTime()-b.getTime())/60000); }
 
 function widthFromLen(len){ const ch=Math.min(Math.max(len*0.7+3,10),56); return `${Math.round(ch)}ch`; }
+
+// >>> OVERRIDES de ancho: compactar horas, muelle y estado <<<
+const TIME_COLS = new Set(["LLEGADA","LLEGADA REAL","SALIDA","SALIDA REAL","SALIDA TOPE"]); // HH:mm
+const FIXED_WIDTHS = {
+  MUELLE: "7ch",            // 3 dígitos + margen
+  ESTADO: "11ch",           // que quepa "CARGANDO"
+};
+const TIME_WIDTH = "8ch";   // HH:mm
+const ACTIONS_WIDTH = "3.5rem"; // más estrecha (solo borrar)
+
 function computeColumnTemplate(rows, order){
-  const widths=order.map((h)=>{ const maxLen=Math.max((h||"").length,...rows.map(r=>((r?.[h]??"")+"").length)); return h==="MATRICULA"?widthFromLen(maxLen+6):widthFromLen(maxLen);});
-  return `${widths.join(" ")} 8rem`;
+  const widths=order.map((h)=>{
+    if (TIME_COLS.has(h)) return TIME_WIDTH;
+    if (h in FIXED_WIDTHS) return FIXED_WIDTHS[h];
+    if (h === "MATRICULA") {
+      const maxLen=Math.max(h.length,...rows.map(r=>((r?.[h]??"")+"").length));
+      return widthFromLen(maxLen+6); // matrícula algo más amplia
+    }
+    const maxLen=Math.max((h||"").length,...rows.map(r=>((r?.[h]??"")+"").length));
+    return widthFromLen(maxLen);
+  });
+  return `${widths.join(" ")} ${ACTIONS_WIDTH}`;
 }
 
 // ---------------------------- Persistencia local ----------------------------
@@ -192,10 +211,7 @@ export default function MecoDockManager(){
   const [debugOpen,setDebugOpen]=useState(false);
   const [importInfo,setImportInfo]=useState(null);
   const [syncMsg,setSyncMsg]=useState("");
-
-  // <<<<<<<<<<<<< NUEVO: estado local para edición libre del MUELLE >>>>>>>>>>>>
-  // Mapa { [rowId]: valorTemporalString }
-  const [dockEdit, setDockEdit] = useState({});
+  const [dockEdit, setDockEdit] = useState({}); // edición libre de MUELLE
 
   // Auth
   const [auth,setAuth]=useLocalStorage("meco-auth",{token:null,user:null});
@@ -236,15 +252,13 @@ export default function MecoDockManager(){
   function openSummary(type){ setSummary({open:true,type}); }
   function closeSummary(){ setSummary({open:false,type:null}); }
 
-  // ----------------- helpers de actualización -----------------
+  // updates
   function updateRowDirect(lado,id,patch){
     setApp(prev=>{
       const rows=prev.lados[lado].rows.map(r=> r.id===id ? withDockAssignStamp(r,{...r,...patch}) : r );
       return {...prev,lados:{...prev.lados,[lado]:{...prev.lados[lado],rows}}};
     });
   }
-
-  // Validación de MUELLE (solo al confirmar)
   function setField(lado,id,field,value){
     if(field==="MUELLE"){
       if(!isValidDockValue(value)){ alert(`El muelle "${value}" no es válido. Solo: ${DOCKS.join(", ")}.`); return false; }
@@ -261,20 +275,16 @@ export default function MecoDockManager(){
     updateRowDirect(lado,id,{[field]:value});
     return true;
   }
-
   function updateRow(lado,id,patch){
-    if(Object.prototype.hasOwnProperty.call(patch,"MUELLE")) {
-      return setField(lado,id,"MUELLE",patch.MUELLE);
-    }
+    if(Object.prototype.hasOwnProperty.call(patch,"MUELLE")) return setField(lado,id,"MUELLE",patch.MUELLE);
     updateRowDirect(lado,id,patch);
     return true;
   }
-
   function addRow(lado){ const newRow={id:crypto.randomUUID(),ESTADO:""}; setApp(prev=>({...prev,lados:{...prev.lados,[lado]:{...prev.lados[lado],rows:[newRow,...prev.lados[lado].rows]}}})); }
   function removeRow(lado,id){ setApp(prev=>({...prev,lados:{...prev.lados,[lado]:{...prev.lados[lado],rows:prev.lados[lado].rows.filter(r=>r.id!==id)}}})); }
   function clearLado(lado){ setApp(prev=>({...prev,lados:{...prev.lados,[lado]:{...prev.lados[lado],rows:[]}}})); }
 
-  // ----------------- IMPORT Excel -----------------
+  // import
   function importExcel(file,lado){
     const reader=new FileReader();
     reader.onload=(e)=>{
@@ -290,8 +300,7 @@ export default function MecoDockManager(){
           chosen:best?{sheet:best.sheetName,headerRowIdx:best.headerRowIdx,bestScore:best.bestScore,headers:best.headers,rows:best.rows.length}:null,
         });
         const rows=best?.rows??[];
-        setApp(prev=>({...prev,lados:{...prev.lados,[lado]:{...prev.lados[lado],rows}}}));
-        if(!rows.length) alert("No se han detectado filas con datos. Revisa cabeceras y datos.");
+        setApp(prev=>({...prev,lados:{...prev.lados[lado]:?prev.lados[lado]:{rows:[]},[lado]:{...prev.lados[lado],rows}}}));
       }catch(err){ console.error(err); alert("Error al leer el Excel."); }
     };
     reader.readAsArrayBuffer(file);
@@ -330,7 +339,7 @@ export default function MecoDockManager(){
 
   function filteredRows(lado){ const list=app.lados[lado].rows; if(filterEstado==="TODOS") return list; return list.filter(r=>(r.ESTADO||"")===filterEstado); }
 
-  // ----------------- Persistencia central -----------------
+  // persistencia central (subir/bajar)
   async function uploadState(){
     try{
       setSyncMsg("Subiendo…");
@@ -366,32 +375,18 @@ export default function MecoDockManager(){
   }
   function doLogout(){ setAuth({token:null,user:null}); }
 
-  // ----------------- Confirmación/cancelación de edición MUELLE -----------------
+  // edición/confirmación MUELLE (tabla y drawer)
   function commitDock(lado, rowId, fallbackValue="") {
     const tmp = (dockEdit[rowId] ?? "").trim();
-    const value = tmp; // permitir vacío -> limpia el muelle
-    // Si no se ha tocado, usa el fallback (valor actual de la fila)
-    const toSet = tmp === "" ? "" : value;
-
-    // Validar solo al confirmar
+    const toSet = tmp === "" ? "" : tmp;
     const ok = setField(lado, rowId, "MUELLE", toSet);
-    if (ok) {
-      setDockEdit(prev => {
-        const next = {...prev};
-        delete next[rowId];
-        return next;
-      });
-    }
+    if (ok) setDockEdit(prev => { const n={...prev}; delete n[rowId]; return n; });
   }
   function cancelDock(rowId) {
-    setDockEdit(prev => {
-      const next = {...prev};
-      delete next[rowId];
-      return next;
-    });
+    setDockEdit(prev => { const n={...prev}; delete n[rowId]; return n; });
   }
 
-  // --------------------------- Render ---------------------------------------
+  // render
   return (
     <TooltipProvider>
       <div className="w-full min-h-screen p-3 md:p-5 bg-gradient-to-b from-slate-50 to-white">
@@ -428,7 +423,7 @@ export default function MecoDockManager(){
         {/* Resumen */}
         <SummaryBar data={summaryData} onOpen={(type)=>setSummary({open:true,type})} />
 
-        {/* 2 columnas: principal + derecha */}
+        {/* 2 columnas */}
         <div className="grid gap-3 mt-3" style={{ gridTemplateColumns: "minmax(0,1fr) 290px" }}>
           <Card>
             <CardHeader className="pb-2">
@@ -495,7 +490,9 @@ export default function MecoDockManager(){
                         <div className="overflow-auto max-h-[84vh]">
                           <div className="grid bg-slate-200 sticky top-0 z-10 select-none" style={{gridTemplateColumns:gridTemplate}}>
                             {columnOrder.map((h)=><HeaderCell key={h} title={h} />)}
-                            <div className="bg-slate-50 p-2"><div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">Acciones</div></div>
+                            <div className="bg-slate-50 p-2">
+                              <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide text-center">Acc.</div>
+                            </div>
                           </div>
                           <div>
                             {filteredRows(n).map((row)=>{
@@ -522,7 +519,6 @@ export default function MecoDockManager(){
                                                 {INCIDENTES.map(opt=><option key={opt} value={opt}>{opt}</option>)}
                                               </select>
                                             ) : isMuelle ? (
-                                              // ------------- Campo MUELLE (edición libre + confirmar con Enter/blur) -------------
                                               <input
                                                 className="h-8 w-full border rounded px-2 bg-white text-sm"
                                                 value={dockEdit[row.id] ?? (row[h] ?? "").toString()}
@@ -543,9 +539,11 @@ export default function MecoDockManager(){
                                           </div>
                                         );
                                       })}
-                                      <div className="p-1 flex items-center justify-center gap-1">
-                                        {hasSLA && <AlertTriangle className={`w-4 h-4 ${sla.tope.level==="crit"||sla.wait.level==="crit"?"text-red-600":"text-amber-500"}`} />}
-                                        <Button size="icon" variant="ghost" onClick={()=>removeRow(n,row.id)}><X className="w-4 h-4" /></Button>
+                                      <div className="p-0.5 flex items-center justify-center">
+                                        {hasSLA && <AlertTriangle className={`w-4 h-4 mr-0.5 ${sla.tope.level==="crit"||sla.wait.level==="crit"?"text-red-600":"text-amber-500"}`} />}
+                                        <Button size="icon" variant="ghost" className="h-7 w-7" onClick={()=>removeRow(n,row.id)} title="Eliminar">
+                                          <X className="w-4 h-4" />
+                                        </Button>
                                       </div>
                                     </div>
                                   </TooltipTrigger>
@@ -678,7 +676,6 @@ function DockDrawer({app,dockPanel,setDockPanel,updateRow,setField,dockEdit,setD
                   <InputX label="Salida real" value={(r["SALIDA REAL"]??"").toString()} onChange={(v)=>updateRow(lado,r.id,{"SALIDA REAL":v})} placeholder="hh:mm / ISO" />
                 </div>
                 <div className="grid grid-cols-2 gap-2">
-                  {/* MUELLE con edición libre y confirmación */}
                   <div>
                     <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">Muelle</div>
                     <input
@@ -774,7 +771,7 @@ function AlertStrip({ waitCrit, waitWarn, topeCrit, topeWarn, onOpen }) {
   );
 }
 
-/* ==================== Barra de resumen (con SLA) & Modal =================== */
+/* ==================== Barra de resumen & Modal =================== */
 function SummaryBar({data,onOpen}){
   const cards = [
     { key:"OK", title:"OK", count:data.OK.length, color:"bg-emerald-600", sub:"Camiones en OK" },
@@ -896,7 +893,13 @@ function exportXLSX(lado,app,columnOrder){
   const headers=columnOrder, rows=app.lados[lado].rows||[];
   const data=rows.map(r=>{ const o={}; headers.forEach(h=>{o[h]=r[h]??""}); return o; });
   const ws=XLSX.utils.json_to_sheet(data,{header:headers,skipHeader:false});
-  const colWidths=headers.map(h=>{ const maxLen=Math.max(h.length,...rows.map(r=>((r?.[h]??"")+"").length)); return {wch:Math.min(Math.max(Math.ceil(maxLen*0.9)+2,10),50)}; });
+  const colWidths=headers.map(h=>{ 
+    if (TIME_COLS.has(h)) return {wch: 8}; 
+    if (h==="MUELLE") return {wch: 7};
+    if (h==="ESTADO") return {wch: 11};
+    const maxLen=Math.max(h.length,...rows.map(r=>((r?.[h]??"")+"").length));
+    return {wch:Math.min(Math.max(Math.ceil(maxLen*0.9)+2,10),50)};
+  });
   ws["!cols"]=colWidths;
   const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,lado.replace(/[\\/?*[\]]/g,"_").slice(0,31));
   XLSX.writeFile(wb,`${lado.replace(/\s+/g,"_")}.xlsx`,{bookType:"xlsx",compression:true});
