@@ -105,24 +105,89 @@ function computeColumnTemplate(rows, order){
 // ---------------------------- Persistencia local ----------------------------
 function useLocalStorage(key, initial){
   const [state,setState]=useState(()=>{ try{const raw=localStorage.getItem(key); return raw?JSON.parse(raw):initial;}catch{return initial;}});
-  useEffect(()=>{ try{ localStorage.setItem(key, JSON.stringify(state)); }catch{} },[key,state]);
+  useEffect(()=>{ try{ localStorage.setItem(key, JSON.stringify(state)); }catch(e){} },[key,state]);
   return [state,setState];
 }
 
 // ----------------------------- Comunicación RT -----------------------------
-function useRealtimeSync(state,setState){
-  const bcRef=useRef(null), wsRef=useRef(null);
-  useEffect(()=>{ try{bcRef.current=new BroadcastChannel("meco-docks");}catch{} const bc=bcRef.current;
-    const onMsg=(ev)=>{ const data=ev&&ev.data; if(data?.type==="APP_STATE") setState(data.payload);};
-    bc?.addEventListener?.("message", onMsg); return ()=>bc?.removeEventListener?.("message", onMsg);
-  },[setState]);
-  useEffect(()=>{ const url=window&&window.MECO_WS_URL; if(!url) return;
-    const ws=new WebSocket(url); wsRef.current=ws;
-    ws.onopen=()=>{ try{ws.send(JSON.stringify({type:"HELLO",role:"client"}));}catch{} };
-    ws.onmessage={(e)=>{ try{const msg=JSON.parse(e.data); if(msg?.type==="APP_STATE") setState(msg.payload);}catch{} };
-    return ()=>{ try{ws.close();}catch{} };
-  },[setState]);
-  useEffect(()=>{ try{bcRef.current?.postMessage({type:"APP_STATE",payload:state});}catch{} try{wsRef.current?.send(JSON.stringify({type:"APP_STATE",payload:state}));}catch{}; },[state]);
+function useRealtimeSync(state, setState) {
+  const bcRef = useRef(null);
+  const wsRef = useRef(null);
+
+  // BroadcastChannel entre pestañas
+  useEffect(() => {
+    try {
+      bcRef.current = new BroadcastChannel("meco-docks");
+    } catch (e) {
+      // Browser sin soporte: ignorar
+    }
+    var bc = bcRef.current;
+
+    function onMsg(ev) {
+      var data = ev && ev.data;
+      if (data && data.type === "APP_STATE" && data.payload) {
+        setState(data.payload);
+      }
+    }
+
+    if (bc && bc.addEventListener) {
+      bc.addEventListener("message", onMsg);
+    }
+
+    return () => {
+      if (bc && bc.removeEventListener) {
+        bc.removeEventListener("message", onMsg);
+      }
+    };
+  }, [setState]);
+
+  // WebSocket (opcional)
+  useEffect(() => {
+    var url = (typeof window !== "undefined") && window.MECO_WS_URL;
+    if (!url) return;
+
+    try {
+      var ws = new WebSocket(url);
+      wsRef.current = ws;
+
+      ws.addEventListener("open", function () {
+        try {
+          ws.send(JSON.stringify({ type: "HELLO", role: "client" }));
+        } catch (e) {}
+      });
+
+      function onWSMessage(e) {
+        try {
+          var msg = null;
+          try { msg = JSON.parse(e.data); } catch (err) {}
+          if (msg && msg.type === "APP_STATE" && msg.payload) {
+            setState(msg.payload);
+          }
+        } catch (e2) {}
+      }
+
+      ws.addEventListener("message", onWSMessage);
+
+      return () => {
+        try { ws.removeEventListener("message", onWSMessage); } catch (e) {}
+        try { ws.close(); } catch (e) {}
+      };
+    } catch (e) {}
+  }, [setState]);
+
+  // Propagar cambios locales a otras pestañas / WS
+  useEffect(() => {
+    try {
+      if (bcRef.current && bcRef.current.postMessage) {
+        bcRef.current.postMessage({ type: "APP_STATE", payload: state });
+      }
+    } catch (e) {}
+    try {
+      if (wsRef.current && wsRef.current.readyState === 1) {
+        wsRef.current.send(JSON.stringify({ type: "APP_STATE", payload: state }));
+      }
+    } catch (e) {}
+  }, [state]);
 }
 
 // ---------------------------- Derivación de muelles -------------------------
@@ -282,9 +347,9 @@ export default function MecoDockManager(){
     updateRowDirect(lado,id,patch);
     return true;
   }
-  function addRow(lado){ const newRow={id:crypto.randomUUID(),ESTADO:""}; setApp(prev=>({...prev,lados:{...prev.lados[lado]:{...prev.lados[lado],rows:[newRow,...prev.lados[lado].rows]}}})); }
-  function removeRow(lado,id){ setApp(prev=>({...prev,lados:{...prev.lados[lado]:{...prev.lados[lado],rows:prev.lados[lado].rows.filter(r=>r.id!==id)}}})); }
-  function clearLado(lado){ setApp(prev=>({...prev,lados:{...prev.lados[lado]:{...prev.lados[lado],rows:[]}}})); }
+  function addRow(lado){ const newRow={id:crypto.randomUUID(),ESTADO:""}; setApp(prev=>({...prev,lados:{...prev.lados[lado],rows:[newRow,...prev.lados[lado].rows]}})); }
+  function removeRow(lado,id){ setApp(prev=>({...prev,lados:{...prev.lados[lado],rows:prev.lados[lado].rows.filter(r=>r.id!==id)}})); }
+  function clearLado(lado){ setApp(prev=>({...prev,lados:{...prev.lados[lado],rows:[]}})); }
 
   // ----------------- IMPORT Excel -----------------
   function importExcel(file,lado){
@@ -309,7 +374,7 @@ export default function MecoDockManager(){
           lados: {
             ...prev.lados,
             [lado]: {
-              ...(prev.lados?.[lado] ?? { name: lado, rows: [] }),
+              ...(prev.lados && prev.lados[lado] ? prev.lados[lado] : { name: lado, rows: [] }),
               rows,
             },
           },
@@ -489,7 +554,7 @@ export default function MecoDockManager(){
                     setFilterEstado={setFilterEstado}
                     onExportCSV={()=>exportCSV(active,app,columnOrder)}
                     onExportXLSX={()=>exportXLSX(active,app,columnOrder)}
-                    onResetCache={()=>{ try{localStorage.removeItem("meco-app");}catch{} window.location.reload(); }}
+                    onResetCache={()=>{ try{localStorage.removeItem("meco-app");}catch(e){} window.location.reload(); }}
                     onUploadState={uploadState}
                     onDownloadState={downloadState}
                     syncMsg={syncMsg}
