@@ -87,18 +87,24 @@ const FIXED_WIDTHS = {
 const TIME_WIDTH = "8ch";   // HH:mm
 const ACTIONS_WIDTH = "3.2rem"; // solo icono borrar
 
-// cálculo de width basado SOLO en los datos (no en el encabezado)
+// cálculo de width basado en el **máximo** entre datos y encabezado
 function computeColumnTemplate(rows, order){
-  const widths=order.map((h)=>{
+  const widths = order.map((h)=>{
     if (TIME_COLS.has(h)) return TIME_WIDTH;
     if (h in FIXED_WIDTHS) return FIXED_WIDTHS[h];
-    if (h === "MATRICULA") {
-      const maxLen=Math.max(...rows.map(r=>((r?.[h]??"")+"").length), 0);
-      return widthFromLen(maxLen+6);
+
+    const headerLen = (h || "").length;
+    let dataMax = 0;
+    if (rows && rows.length) {
+      dataMax = Math.max(...rows.map(r => ((r?.[h] ?? "") + "").length), 0);
     }
-    const maxLen=Math.max(...rows.map(r=>((r?.[h]??"")+"").length), 0);
-    return widthFromLen(maxLen || 8);
+
+    if (h === "MATRICULA") {
+      return widthFromLen(Math.max(dataMax + 6, headerLen));
+    }
+    return widthFromLen(Math.max(dataMax, headerLen));
   });
+
   return `${widths.join(" ")} ${ACTIONS_WIDTH}`;
 }
 
@@ -568,11 +574,11 @@ export default function MecoDockManager(){
                     <TabsContent key={n} value={n} className="mt-3">
                       <div className="border rounded-xl overflow-hidden">
                         <div className="overflow-auto max-h-[84vh]">
-                          {/* Encabezados compactos con salto de línea */}
+                          {/* Encabezados compactos en una sola línea */}
                           <div className="grid bg-slate-200 sticky top-0 z-10 select-none" style={{gridTemplateColumns:gridTemplate}}>
                             {columnOrder.map((h)=><HeaderCell key={h} title={h} />)}
                             <div className="bg-slate-50 p-1.5">
-                              <div className="text-[10px] leading-tight font-semibold text-muted-foreground uppercase tracking-wide text-center">Acc.</div>
+                              <div className="text-[10px] leading-tight font-semibold text-muted-foreground uppercase tracking-wide text-center whitespace-nowrap">Acc.</div>
                             </div>
                           </div>
                           <div>
@@ -795,15 +801,13 @@ function HeaderCell({title}) {
       <div
         className="
           text-[10px] leading-tight font-semibold text-muted-foreground uppercase tracking-wide
-          flex items-start gap-1
-          whitespace-normal break-words
+          flex items-center gap-1
+          whitespace-nowrap
         "
-        style={{ wordBreak: "break-word" }}
+        title={title}
       >
-        <span className="inline-block select-none text-[10px] mt-[1px]">⋮⋮</span>
-        <span className="block">
-          {title}
-        </span>
+        <span className="inline-block select-none text-[10px]">⋮⋮</span>
+        <span className="block">{title}</span>
       </div>
     </div>
   );
@@ -988,7 +992,7 @@ function exportXLSX(lado,app,columnOrder){
     if (TIME_COLS.has(h)) return {wch: 8}; 
     if (h==="MUELLE") return {wch: 7};
     if (h==="ESTADO") return {wch: 11};
-    const maxLen=Math.max(...rows.map(r=>((r?.[h]??"")+"").length), 0);
+    const maxLen=Math.max(...rows.map(r=>((r?.[h]??"")+"").length), 0, (h||"").length);
     return {wch:Math.min(Math.max(Math.ceil((maxLen||8)*0.9)+2,8),50)};
   });
   ws["!cols"]=colWidths;
