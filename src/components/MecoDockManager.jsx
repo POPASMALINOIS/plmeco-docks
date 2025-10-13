@@ -10,10 +10,10 @@ import { motion } from "framer-motion";
 
 /**
  * PLMECO – Gestión de Muelles (WEB)
- * Cambios:
- * - deriveDocks con prioridad global OCUPADO > ESPERA > LIBRE para consolidar varios Lados.
- * - Filas coloreadas por ESTADO: OK (verde), CARGANDO (amarillo), ANULADO (rojo).
- * - Mantiene reordenación de columnas por drag&drop con persistencia.
+ * Cambios en esta versión:
+ * - Se respeta el valor de ESTADO al importar (vacío o "*" => queda vacío; no se fuerza "OK").
+ * - Si ESTADO está vacío, la fila no se colorea (neutro).
+ * - Mantiene: consolidación multi-lado de muelles, DnD de columnas con persistencia, panel de muelle editable.
  */
 
 // --------------------------- Constantes generales ---------------------------
@@ -126,6 +126,16 @@ function coerceCell(v) {
   return String(v).replace(/\r?\n+/g, " ").replace(/\s{2,}/g, " ").trim();
 }
 
+// Normaliza ESTADO desde Excel: vacío o "*" => "", acepta OK/CARGANDO/ANULADO (case-insensitive).
+function normalizeEstado(v) {
+  const raw = String(v ?? "").trim();
+  if (raw === "" || raw === "*") return "";
+  const up = raw.toUpperCase();
+  if (["OK", "CARGANDO", "ANULADO"].includes(up)) return up;
+  // Si viene otro texto, lo dejamos tal cual en mayúsculas (por si hay variantes internas)
+  return up;
+}
+
 // Autoancho por contenido (ancho en "ch"); MATRÍCULA con un plus
 function widthFromLen(len) {
   const ch = Math.min(Math.max(len * 0.7 + 3, 10), 56);
@@ -185,15 +195,13 @@ function useRealtimeSync(state, setState) {
 const PRIORITY = { "LIBRE": 0, "ESPERA": 1, "OCUPADO": 2 };
 
 function betterDockState(current, incoming) {
-  // Devuelve el estado con mayor prioridad
   if (!current) return incoming;
   return PRIORITY[incoming.state] > PRIORITY[current.state] ? incoming : current;
 }
 
 function deriveDocks(lados) {
-  // Calcula el estado consolidado de cada muelle a través de TODOS los lados
   const dockMap = new Map();
-  DOCKS.forEach((d) => dockMap.set(d, { state: "LIBRE" })); // base
+  DOCKS.forEach((d) => dockMap.set(d, { state: "LIBRE" }));
 
   Object.keys(lados).forEach((ladoName) => {
     (lados[ladoName]?.rows || []).forEach((row) => {
@@ -204,10 +212,6 @@ function deriveDocks(lados) {
       const llegadaReal = (row["LLEGADA REAL"] || "").trim();
       const salidaReal  = (row["SALIDA REAL"]  || "").trim();
 
-      // Regla: SALIDA REAL => libera.
-      // Si no hay salida:
-      //   - con LLEGADA REAL => OCUPADO
-      //   - sin LLEGADA REAL => ESPERA (reservado)
       let state = "ESPERA";
       if (llegadaReal) state = "OCUPADO";
       if (salidaReal)  state = "LIBRE";
@@ -217,7 +221,6 @@ function deriveDocks(lados) {
         : { state, row, lado: ladoName };
 
       const prev = dockMap.get(muNum);
-      // Nunca dejar que LIBRE pise un no-LIBRE; elegir la mejor prioridad
       const next = state === "LIBRE" ? (prev || { state: "LIBRE" }) : betterDockState(prev, incoming);
       dockMap.set(muNum, next);
     });
@@ -234,17 +237,20 @@ function dockColor(state) {
 function estadoBadgeColor(estado) {
   if (estado === "ANULADO")  return "bg-red-600";
   if (estado === "CARGANDO") return "bg-amber-500";
-  return "bg-emerald-600";
+  if (estado === "OK")       return "bg-emerald-600";
+  return "bg-slate-400"; // para estados no reconocidos
 }
 function rowColorByEstado(estado) {
   if (estado === "ANULADO")  return "bg-red-100";
   if (estado === "CARGANDO") return "bg-amber-100";
-  return "bg-emerald-100"; // OK o vacío -> verde
+  if (estado === "OK")       return "bg-emerald-100";
+  return ""; // vacío u otros -> sin color
 }
 function rowAccentBorder(estado) {
   if (estado === "ANULADO")  return "border-l-4 border-red-400";
   if (estado === "CARGANDO") return "border-l-4 border-amber-400";
-  return "border-l-4 border-emerald-400";
+  if (estado === "OK")       return "border-l-4 border-emerald-400";
+  return "";
 }
 
 // ------------------------------- Componente ---------------------------------
@@ -278,7 +284,7 @@ export default function MecoDockManager() {
     });
   }
   function addRow(lado) {
-    const newRow = { id: crypto.randomUUID(), ESTADO: "OK" };
+    const newRow = { id: crypto.randomUUID(), ESTADO: "" }; // por defecto vacío
     setApp((prev) => ({ ...prev, lados: { ...prev.lados, [lado]: { ...prev.lados[lado], rows: [newRow, ...prev.lados[lado].rows] } } }));
   }
   function removeRow(lado, id) {
@@ -347,12 +353,16 @@ export default function MecoDockManager() {
         seenHeaders.add(k);
         obj[k] = coerceCell(row[kRaw]);
       });
-      // aseguramos todas las keys esperadas
+      // Aseguramos todas las keys esperadas
       for (const h of EXPECTED_KEYS) if (!(h in obj)) obj[h] = "";
+
+      // Normalizar ESTADO (vacío o "*" => vacío; OK/CARGANDO/ANULADO en mayúsculas; otros => mayúsculas)
+      obj["ESTADO"] = normalizeEstado(obj["ESTADO"]);
+
       const keysMin = ["TRANSPORTISTA","MATRICULA","DESTINO","LLEGADA","SALIDA","OBSERVACIONES"];
       const allEmpty = keysMin.every(k => String(obj[k] || "").trim() === "");
       if (allEmpty) return;
-      if (!obj["ESTADO"]) obj["ESTADO"] = "OK";
+
       rows.push({ id: crypto.randomUUID(), ...obj });
     });
 
@@ -378,7 +388,7 @@ export default function MecoDockManager() {
   function filteredRows(lado) {
     const list = app.lados[lado].rows;
     if (filterEstado === "TODOS") return list;
-    return list.filter((r) => (r.ESTADO || "OK") === filterEstado);
+    return list.filter((r) => (r.ESTADO || "") === filterEstado);
   }
 
   // --------------------------- DnD Handlers (HTML5) -------------------------
@@ -521,7 +531,7 @@ export default function MecoDockManager() {
                           {/* Filas */}
                           <div>
                             {filteredRows(n).map((row) => {
-                              const estado = (row.ESTADO || "OK").toString();
+                              const estado = (row.ESTADO || "").toString();
                               return (
                                 <div
                                   key={row.id}
@@ -618,7 +628,7 @@ function DockRight({ app, setDockPanel, dockPanel }) {
             const color = dockColor(info.state);
             const label = `${d}`;
             const tooltip = info.row
-              ? `${label} • ${info.row.MATRICULA || "?"} • ${info.row.DESTINO || "?"} • ${(info.row.ESTADO || "OK")}`
+              ? `${label} • ${info.row.MATRICULA || "?"} • ${info.row.DESTINO || "?"} • ${(info.row.ESTADO || "")}`
               : `${label} • Libre`;
 
             const btn = (
@@ -676,6 +686,8 @@ function DockDrawer({ app, dockPanel, setDockPanel, updateRow }) {
             const r = app.lados[lado]?.rows.find(rr => rr.id === rowId);
             if (!r) return <div className="text-muted-foreground">No se encontró la fila.</div>;
 
+            const estado = (r.ESTADO || "").toString();
+
             return (
               <div className="space-y-2">
                 <KV label="Lado" value={lado} />
@@ -683,7 +695,11 @@ function DockDrawer({ app, dockPanel, setDockPanel, updateRow }) {
                 <KV label="Destino" value={r.DESTINO || "—"} maxw />
                 <div className="flex items-center justify-between">
                   <div className="text-sm text-muted-foreground">Estado</div>
-                  <Badge className={`${estadoBadgeColor(r.ESTADO)} text-white`}>{r.ESTADO || "OK"}</Badge>
+                  {estado ? (
+                    <Badge className={`${estadoBadgeColor(estado)} text-white`}>{estado}</Badge>
+                  ) : (
+                    <span className="text-slate-400 text-sm">—</span>
+                  )}
                 </div>
 
                 <div className="grid grid-cols-2 gap-2 pt-2">
@@ -726,7 +742,7 @@ function DockDrawer({ app, dockPanel, setDockPanel, updateRow }) {
                   />
                   <SelectX
                     label="Estado"
-                    value={(r["ESTADO"] ?? "").toString()}
+                    value={estado}
                     onChange={(v) => updateRow(lado, r.id, { "ESTADO": v })}
                     options={CAMION_ESTADOS}
                   />
@@ -840,7 +856,7 @@ function ToolbarX({ onImport, onAddRow, onClear, filterEstado, setFilterEstado, 
           onChange={(e)=> setFilterEstado(e.target.value || "TODOS")}
         >
           <option value="">Todos</option>
-        {CAMION_ESTADOS.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+          {CAMION_ESTADOS.map(opt => <option key={opt} value={opt}>{opt}</option>)}
         </select>
       </div>
     </div>
