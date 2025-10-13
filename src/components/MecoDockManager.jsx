@@ -75,7 +75,8 @@ function parseFlexibleToDate(s){
 }
 function minutesDiff(a,b){ return Math.round((a.getTime()-b.getTime())/60000); }
 
-function widthFromLen(len){ const ch=Math.min(Math.max(len*0.7+3,10),56); return `${Math.round(ch)}ch`; }
+// ancho mínimo algo menor para permitir columnas más compactas
+function widthFromLen(len){ const ch=Math.min(Math.max(len*0.7+2,8),56); return `${Math.round(ch)}ch`; }
 
 // >>> OVERRIDES de ancho: compactar horas, muelle y estado <<<
 const TIME_COLS = new Set(["LLEGADA","LLEGADA REAL","SALIDA","SALIDA REAL","SALIDA TOPE"]); // HH:mm
@@ -84,18 +85,19 @@ const FIXED_WIDTHS = {
   ESTADO: "11ch",           // que quepa "CARGANDO"
 };
 const TIME_WIDTH = "8ch";   // HH:mm
-const ACTIONS_WIDTH = "3.5rem"; // más estrecha (solo borrar)
+const ACTIONS_WIDTH = "3.2rem"; // solo icono borrar
 
+// cálculo de width basado SOLO en los datos (no en el encabezado)
 function computeColumnTemplate(rows, order){
   const widths=order.map((h)=>{
     if (TIME_COLS.has(h)) return TIME_WIDTH;
     if (h in FIXED_WIDTHS) return FIXED_WIDTHS[h];
     if (h === "MATRICULA") {
-      const maxLen=Math.max(h.length,...rows.map(r=>((r?.[h]??"")+"").length));
-      return widthFromLen(maxLen+6); // matrícula algo más amplia
+      const maxLen=Math.max(...rows.map(r=>((r?.[h]??"")+"").length), 0);
+      return widthFromLen(maxLen+6);
     }
-    const maxLen=Math.max((h||"").length,...rows.map(r=>((r?.[h]??"")+"").length));
-    return widthFromLen(maxLen);
+    const maxLen=Math.max(...rows.map(r=>((r?.[h]??"")+"").length), 0);
+    return widthFromLen(maxLen || 8);
   });
   return `${widths.join(" ")} ${ACTIONS_WIDTH}`;
 }
@@ -117,7 +119,7 @@ function useRealtimeSync(state,setState){
   useEffect(()=>{ const url=window&&window.MECO_WS_URL; if(!url) return;
     const ws=new WebSocket(url); wsRef.current=ws;
     ws.onopen=()=>{ try{ws.send(JSON.stringify({type:"HELLO",role:"client"}));}catch{} };
-    ws.onmessage=(e)=>{ try{const msg=JSON.parse(e.data); if(msg?.type==="APP_STATE") setState(msg.payload);}catch{} };
+    ws.onmessage={(e)=>{ try{const msg=JSON.parse(e.data); if(msg?.type==="APP_STATE") setState(msg.payload);}catch{} };
     return ()=>{ try{ws.close();}catch{} };
   },[setState]);
   useEffect(()=>{ try{bcRef.current?.postMessage({type:"APP_STATE",payload:state});}catch{} try{wsRef.current?.send(JSON.stringify({type:"APP_STATE",payload:state}));}catch{}; },[state]);
@@ -280,9 +282,9 @@ export default function MecoDockManager(){
     updateRowDirect(lado,id,patch);
     return true;
   }
-  function addRow(lado){ const newRow={id:crypto.randomUUID(),ESTADO:""}; setApp(prev=>({...prev,lados:{...prev.lados,[lado]:{...prev.lados[lado],rows:[newRow,...prev.lados[lado].rows]}}})); }
-  function removeRow(lado,id){ setApp(prev=>({...prev,lados:{...prev.lados,[lado]:{...prev.lados[lado],rows:prev.lados[lado].rows.filter(r=>r.id!==id)}}})); }
-  function clearLado(lado){ setApp(prev=>({...prev,lados:{...prev.lados,[lado]:{...prev.lados[lado],rows:[]}}})); }
+  function addRow(lado){ const newRow={id:crypto.randomUUID(),ESTADO:""}; setApp(prev=>({...prev,lados:{...prev.lados[lado]:{...prev.lados[lado],rows:[newRow,...prev.lados[lado].rows]}}})); }
+  function removeRow(lado,id){ setApp(prev=>({...prev,lados:{...prev.lados[lado]:{...prev.lados[lado],rows:prev.lados[lado].rows.filter(r=>r.id!==id)}}})); }
+  function clearLado(lado){ setApp(prev=>({...prev,lados:{...prev.lados[lado]:{...prev.lados[lado],rows:[]}}})); }
 
   // ----------------- IMPORT Excel -----------------
   function importExcel(file,lado){
@@ -301,7 +303,7 @@ export default function MecoDockManager(){
         });
         const rows=best?.rows??[];
 
-        // *** FIX correcto: actualizar el lado con estructura segura ***
+        // actualizar el lado con estructura segura
         setApp(prev => ({
           ...prev,
           lados: {
@@ -501,10 +503,11 @@ export default function MecoDockManager(){
                     <TabsContent key={n} value={n} className="mt-3">
                       <div className="border rounded-xl overflow-hidden">
                         <div className="overflow-auto max-h-[84vh]">
+                          {/* Encabezados compactos con salto de línea */}
                           <div className="grid bg-slate-200 sticky top-0 z-10 select-none" style={{gridTemplateColumns:gridTemplate}}>
                             {columnOrder.map((h)=><HeaderCell key={h} title={h} />)}
-                            <div className="bg-slate-50 p-2">
-                              <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide text-center">Acc.</div>
+                            <div className="bg-slate-50 p-1.5">
+                              <div className="text-[10px] leading-tight font-semibold text-muted-foreground uppercase tracking-wide text-center">Acc.</div>
                             </div>
                           </div>
                           <div>
@@ -690,7 +693,7 @@ function DockDrawer({app,dockPanel,setDockPanel,updateRow,setField,dockEdit,setD
                 </div>
                 <div className="grid grid-cols-2 gap-2">
                   <div>
-                    <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">Muelle</div>
+                    <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide leading-tight">Muelle</div>
                     <input
                       className="h-9 w-full border rounded px-2 bg-white text-sm"
                       value={dockEdit[rowId] ?? (r["MUELLE"] ?? "").toString()}
@@ -723,21 +726,31 @@ function DockDrawer({app,dockPanel,setDockPanel,updateRow,setField,dockEdit,setD
 // ------------------------------ Subcomponentes UI ---------------------------
 function HeaderCell({title}) {
   return (
-    <div className="bg-slate-50 p-2 border-r border-slate-200">
-      <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide flex items-center gap-2">
-        <span className="inline-block select-none">⋮⋮</span>{title}
+    <div className="bg-slate-50 p-1.5 border-r border-slate-200">
+      <div
+        className="
+          text-[10px] leading-tight font-semibold text-muted-foreground uppercase tracking-wide
+          flex items-start gap-1
+          whitespace-normal break-words
+        "
+        style={{ wordBreak: "break-word" }}
+      >
+        <span className="inline-block select-none text-[10px] mt-[1px]">⋮⋮</span>
+        <span className="block">
+          {title}
+        </span>
       </div>
     </div>
   );
 }
 function KV({label,value,maxw}){ return (<div className="flex items-center justify-between"><div className="text-sm text-muted-foreground">{label}</div><div className={`font-medium ${maxw?"truncate max-w-[150px]":""}`}>{value}</div></div>); }
 function InputX({label,value,onChange,placeholder}){ return (
-  <div><div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">{label}</div>
+  <div><div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide leading-tight">{label}</div>
     <input className="h-9 w-full border rounded px-2 bg-white text-sm" value={value} onChange={(e)=>onChange(e.target.value)} placeholder={placeholder} />
   </div>
 );}
 function SelectX({label,value,onChange,options}){ return (
-  <div><div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">{label}</div>
+  <div><div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide leading-tight">{label}</div>
     <select className="h-9 w-full border rounded px-2 bg-white text-sm" value={value} onChange={(e)=>onChange(e.target.value)}>
       <option value="">Seleccionar</option>{options.map(opt=><option key={opt} value={opt}>{opt}</option>)}
     </select>
@@ -910,8 +923,8 @@ function exportXLSX(lado,app,columnOrder){
     if (TIME_COLS.has(h)) return {wch: 8}; 
     if (h==="MUELLE") return {wch: 7};
     if (h==="ESTADO") return {wch: 11};
-    const maxLen=Math.max(h.length,...rows.map(r=>((r?.[h]??"")+"").length));
-    return {wch:Math.min(Math.max(Math.ceil(maxLen*0.9)+2,10),50)};
+    const maxLen=Math.max(...rows.map(r=>((r?.[h]??"")+"").length), 0);
+    return {wch:Math.min(Math.max(Math.ceil((maxLen||8)*0.9)+2,8),50)};
   });
   ws["!cols"]=colWidths;
   const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,lado.replace(/[\\/?*[\]]/g,"_").slice(0,31));
