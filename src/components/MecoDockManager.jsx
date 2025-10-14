@@ -1,4 +1,4 @@
-// MecoDockManager.jsx — TRANSPORTISTA 160px, DESTINO 360px, Drawer reactivado y editable, "Vaciar lado" blindado
+// MecoDockManager.jsx — Llegada Real/Salida Real 90px, resto de horas 80px, Drawer OK, "Vaciar lado" blindado
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -82,9 +82,10 @@ const HEADER_TEXT_CLASS = "text-[9px] leading-none font-semibold text-muted-fore
 
 /* ==================== Anchos forzados en PX ==================== */
 const TIME_COLS = new Set(["LLEGADA","LLEGADA REAL","SALIDA","SALIDA REAL","SALIDA TOPE"]); // HH:mm
-const PX_TIME = 80;      // 80px para horas
-const PX_MUELLE = 90;    // MUELLE
-const PX_ESTADO = 130;   // ESTADO
+const PX_TIME = 80;          // Horas estándar (LLEGADA, SALIDA, SALIDA TOPE)
+const PX_TIME_REAL = 90;     // Horas "real" (LLEGADA REAL, SALIDA REAL)
+const PX_MUELLE = 90;        // MUELLE
+const PX_ESTADO = 130;       // ESTADO
 
 // Ajustes solicitados
 const PX_TRANSPORTISTA = 160; // reducido
@@ -101,10 +102,11 @@ const FIXED_PX = {
   "OBSERVACIONES": PX_OBSERVACIONES,
   "MUELLE": PX_MUELLE,
   "ESTADO": PX_ESTADO,
+  // Horas:
   "LLEGADA": PX_TIME,
-  "LLEGADA REAL": PX_TIME,
+  "LLEGADA REAL": PX_TIME_REAL, // 90px
   "SALIDA": PX_TIME,
-  "SALIDA REAL": PX_TIME,
+  "SALIDA REAL": PX_TIME_REAL,  // 90px
   "SALIDA TOPE": PX_TIME,
 };
 const ACTIONS_PX = 44; // columna Acciones
@@ -568,7 +570,7 @@ export default function MecoDockManager(){
           <DockRight app={app} setDockPanel={setDockPanel} dockPanel={dockPanel} />
         </div>
 
-        {/* Drawer muelles (REACTIVADO) */}
+        {/* Drawer muelles */}
         <DockDrawer
           app={app}
           dockPanel={dockPanel}
@@ -898,7 +900,7 @@ function exportXLSX(lado,app,columnOrder){
   const ws=XLSX.utils.json_to_sheet(data,{header:headers,skipHeader:false});
   const colWidths=headers.map(h=>{
     if (h in FIXED_PX) return { wpx: FIXED_PX[h] };
-    if (TIME_COLS.has(h)) return { wpx: PX_TIME };
+    if (TIME_COLS.has(h)) return { wpx: 140 }; // ancho export visual; no afecta a grid
     return { wpx: 140 };
   });
   ws["!cols"]=colWidths;
