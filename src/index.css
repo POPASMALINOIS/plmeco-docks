@@ -1,3 +1,11 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* Opcional: ajustes globales suaves */
+html, body, #root {
+  height: 100%;
+}
+body {
+  @apply bg-white text-slate-900;
+}
