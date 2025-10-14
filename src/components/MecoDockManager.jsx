@@ -1,11 +1,11 @@
-// MecoDockManager.jsx — Fix edición MUELLE (validación en blur + revert), Llegada/Salida REAL 100px
+// MecoDockManager.jsx — SALIDA TOPE 100px, Llegada/Salida REAL 100px, sin login ni subir/cargar red
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { Download, FileUp, Plus, Trash2, Upload, RefreshCw, LogIn, LogOut, X, AlertTriangle, GripVertical } from "lucide-react";
+import { Download, FileUp, Plus, Trash2, X, AlertTriangle, GripVertical } from "lucide-react";
 import * as XLSX from "xlsx";
 import { motion } from "framer-motion";
 
@@ -82,10 +82,11 @@ const HEADER_TEXT_CLASS = "text-[9px] leading-none font-semibold text-muted-fore
 
 /* ==================== Anchos forzados en PX ==================== */
 const TIME_COLS = new Set(["LLEGADA","LLEGADA REAL","SALIDA","SALIDA REAL","SALIDA TOPE"]); // HH:mm
-const PX_TIME = 80;          // Horas estándar (LLEGADA, SALIDA, SALIDA TOPE)
-const PX_TIME_REAL = 100;    // Horas "real" (LLEGADA REAL, SALIDA REAL) — solicitado
-const PX_MUELLE = 90;        // MUELLE
-const PX_ESTADO = 130;       // ESTADO
+const PX_TIME = 80;           // LLEGADA y SALIDA
+const PX_TIME_REAL = 100;     // LLEGADA REAL y SALIDA REAL
+const PX_TIME_TOPE = 100;     // SALIDA TOPE
+const PX_MUELLE = 90;         // MUELLE
+const PX_ESTADO = 130;        // ESTADO
 
 // Ajustes columnas
 const PX_TRANSPORTISTA = 160; // reducido
@@ -102,12 +103,11 @@ const FIXED_PX = {
   "OBSERVACIONES": PX_OBSERVACIONES,
   "MUELLE": PX_MUELLE,
   "ESTADO": PX_ESTADO,
-  // Horas:
   "LLEGADA": PX_TIME,
-  "LLEGADA REAL": PX_TIME_REAL, // 100px
+  "LLEGADA REAL": PX_TIME_REAL,
   "SALIDA": PX_TIME,
-  "SALIDA REAL": PX_TIME_REAL,  // 100px
-  "SALIDA TOPE": PX_TIME,
+  "SALIDA REAL": PX_TIME_REAL,
+  "SALIDA TOPE": PX_TIME_TOPE,
 };
 const ACTIONS_PX = 44; // columna Acciones
 
@@ -227,14 +227,6 @@ export default function MecoDockManager(){
   const [clock,setClock]=useState(nowISO());
   const [dockPanel,setDockPanel]=useState({open:false,dock:undefined,lado:undefined,rowId:undefined});
   const [importInfo,setImportInfo]=useState(null);
-  const [syncMsg,setSyncMsg]=useState("");
-
-  // Auth (placeholder)
-  const [auth,setAuth]=useLocalStorage("meco-auth",{token:null,user:null});
-  const [loginOpen,setLoginOpen]=useState(false);
-
-  // Resumen / modal
-  const [summary,setSummary]=useState({open:false,type:null});
 
   // Orden columnas (persistente)
   const [columnOrder,setColumnOrder]=useLocalStorage("meco-colorder",DEFAULT_ORDER);
@@ -289,7 +281,7 @@ export default function MecoDockManager(){
     };
   },[app]);
 
-  // helpers generales
+  // helpers
   function updateRowDirect(lado,id,patch){
     setApp(prev=>{
       const prevRows = prev?.lados?.[lado]?.rows || [];
@@ -298,11 +290,9 @@ export default function MecoDockManager(){
     });
   }
   function setField(lado,id,field,value){
-    // Validación directa (solo se usa ya para campos no muelle)
     updateRowDirect(lado,id,{[field]:value});
     return true;
   }
-
   // commit para MUELLE en blur
   function commitDockValue(lado, rowId, newValue){
     const prevValue = muPrevRef.current[rowId] ?? "";
@@ -346,7 +336,6 @@ export default function MecoDockManager(){
     });
   }
   function clearLado(lado){
-    // Blindado: nunca null/undefined, siempre []
     setApp(prev=>({...prev, lados:{...prev.lados, [lado]:{...(prev.lados?.[lado]||{name:lado}), rows:[]}}}));
   }
 
@@ -421,11 +410,6 @@ export default function MecoDockManager(){
     return list.filter(r=>(r?.ESTADO||"")===filterEstado);
   }
 
-  // persistencia central (placeholders)
-  async function uploadState(){ setSyncMsg("Subiendo…"); setTimeout(()=>setSyncMsg(""),1000); }
-  async function downloadState(){ setSyncMsg("Cargando…"); setTimeout(()=>setSyncMsg(""),1000); }
-  function doLogout(){ setAuth({token:null,user:null}); }
-
   // render
   const visibleRowsByLado = (lado)=>filteredRows(lado);
 
@@ -434,22 +418,9 @@ export default function MecoDockManager(){
       <div className="w-full min-h-screen p-3 md:p-5 bg-gradient-to-b from-slate-50 to-white">
         <header className="flex items-center gap-2 justify-between mb-3">
           <h1 className="text-2xl font-bold tracking-tight">PLMECO · Gestión de Muelles</h1>
-          <div className="flex items-center gap-3">
-            {auth?.user ? (
-              <>
-                <div className="text-sm">
-                  <div className="leading-tight font-medium">{auth.user.name || "Usuario"}</div>
-                  <div className="text-xs text-muted-foreground">{auth.user.role || "user"}</div>
-                </div>
-                <Button size="sm" variant="outline" onClick={doLogout}><LogOut className="w-4 h-4 mr-2" />Salir</Button>
-              </>
-            ) : (
-              <Button size="sm" onClick={()=>setLoginOpen(true)}><LogIn className="w-4 h-4 mr-2" />Entrar</Button>
-            )}
-            <div className="text-right">
-              <div className="text-xs text-muted-foreground">Fecha y hora</div>
-              <div className="font-medium">{clock}</div>
-            </div>
+          <div className="text-right">
+            <div className="text-xs text-muted-foreground">Fecha y hora</div>
+            <div className="font-medium">{clock}</div>
           </div>
         </header>
 
@@ -489,9 +460,6 @@ export default function MecoDockManager(){
                     onExportCSV={()=>exportCSV(active,app,columnOrder)}
                     onExportXLSX={()=>exportXLSX(active,app,columnOrder)}
                     onResetCache={()=>{ try{localStorage.removeItem("meco-app");}catch(e){} window.location.reload(); }}
-                    onUploadState={uploadState}
-                    onDownloadState={downloadState}
-                    syncMsg={syncMsg}
                   />
                 </div>
 
@@ -601,7 +569,7 @@ export default function MecoDockManager(){
         />
 
         {/* Modal resumen */}
-        <SummaryModal open={summary.open} type={summary.type} data={summaryData} onClose={()=>setSummary({open:false,type:null})} />
+        <SummaryModal open={summaryData.open} type={summaryData.type} data={summaryData} onClose={()=>{}} />
 
         <footer className="mt-4 text-xs text-muted-foreground flex items-center justify-between">
           <div>Estados camión: <Badge className="bg-emerald-600">OK</Badge> · <Badge className="bg-amber-500">CARGANDO</Badge> · <Badge className="bg-red-600">ANULADO</Badge></div>
@@ -881,7 +849,7 @@ function SummaryModal({open,type,data,onClose}){
 }
 
 /* ============================ Toolbar & Export ============================ */
-function ToolbarX({onImport,onAddRow,onClear,filterEstado,setFilterEstado,onExportCSV,onExportXLSX,onResetCache,onUploadState,onDownloadState,syncMsg}){
+function ToolbarX({onImport,onAddRow,onClear,filterEstado,setFilterEstado,onExportCSV,onExportXLSX,onResetCache}){
   const fileRef=useRef(null);
   return (
     <div className="flex items-center gap-2 flex-wrap">
@@ -892,11 +860,6 @@ function ToolbarX({onImport,onAddRow,onClear,filterEstado,setFilterEstado,onExpo
       <Button size="sm" variant="outline" onClick={onAddRow}><Plus className="mr-2 h-4 w-4" /> Nueva fila</Button>
       <Button size="sm" variant="destructive" onClick={onClear}><Trash2 className="mr-2 h-4 w-4" /> Vaciar lado</Button>
       <Button size="sm" variant="secondary" onClick={onResetCache}>Limpiar caché local</Button>
-      <div className="flex items-center gap-2">
-        <Button size="sm" variant="outline" onClick={onUploadState} title="Subir al servidor"><Upload className="mr-2 h-4 w-4" /> Subir</Button>
-        <Button size="sm" variant="outline" onClick={onDownloadState} title="Cargar del servidor"><RefreshCw className="mr-2 h-4 w-4" /> Cargar</Button>
-        {syncMsg ? <span className="text-xs text-muted-foreground">{syncMsg}</span> : null}
-      </div>
       <div className="ml-auto flex items-center gap-2">
         <span className="text-sm text-muted-foreground">Filtrar estado</span>
         <select className="h-8 w-[160px] border rounded px-2 bg-white text-sm" value={filterEstado==="TODOS"?"":filterEstado} onChange={(e)=>setFilterEstado(e.target.value||"TODOS")}>
