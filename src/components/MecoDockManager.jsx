@@ -75,41 +75,33 @@ function parseFlexibleToDate(s){
 }
 function minutesDiff(a,b){ return Math.round((a.getTime()-b.getTime())/60000); }
 
-/* ==================== Cálculo de anchos (holgura real) ===================== */
-// Más generoso: 1.05ch por carácter + 6ch de margen, mín 14ch, máx 80ch
+/* ==================== Cálculo de anchos (holgura + overrides) ============== */
 function widthFromLen(len){
   const ch = Math.min(Math.max(len * 1.05 + 6, 14), 80);
   return `${Math.round(ch)}ch`;
 }
-
 const TIME_COLS = new Set(["LLEGADA","LLEGADA REAL","SALIDA","SALIDA REAL","SALIDA TOPE"]); // HH:mm
-const FIXED_WIDTHS = {
-  MUELLE: "9ch",
-  ESTADO: "13ch", // que quepa "CARGANDO"
-};
+const FIXED_WIDTHS = { MUELLE: "9ch", ESTADO: "13ch" };
 const TIME_WIDTH = "10ch";
 const ACTIONS_WIDTH = "3.2rem";
 
-// cálculo del width basado en el **máximo** entre datos y encabezado + padding fuerte
-function computeColumnTemplate(rows, order){
+function idealWidthForColumn(h, rows){
+  if (TIME_COLS.has(h)) return TIME_WIDTH;
+  if (h in FIXED_WIDTHS) return FIXED_WIDTHS[h];
+  const headerLen = (h || "").length;
+  const dataMax = rows && rows.length ? Math.max(...rows.map(r => ((r?.[h] ?? "") + "").length), 0) : 0;
+  const pad = 10;
+  if (h === "MATRICULA") return widthFromLen(Math.max(dataMax + 8, headerLen) + pad);
+  if (h === "OBSERVACIONES" || h === "DESTINO" || h === "TRANSPORTISTA")
+    return widthFromLen(Math.max(dataMax, headerLen) + pad + 8);
+  return widthFromLen(Math.max(dataMax, headerLen) + pad);
+}
+
+function computeColumnTemplate(rows, order, overrides){
   const widths = order.map((h)=>{
-    if (TIME_COLS.has(h)) return TIME_WIDTH;
-    if (h in FIXED_WIDTHS) return FIXED_WIDTHS[h];
-
-    const headerLen = (h || "").length;
-    const dataMax = rows && rows.length ? Math.max(...rows.map(r => ((r?.[h] ?? "") + "").length), 0) : 0;
-
-    const pad = 10; // margen alto para asegurar header completo
-
-    if (h === "MATRICULA") {
-      return widthFromLen(Math.max(dataMax + 8, headerLen) + pad);
-    }
-    if (h === "OBSERVACIONES" || h === "DESTINO" || h === "TRANSPORTISTA") {
-      return widthFromLen(Math.max(dataMax, headerLen) + pad + 8);
-    }
-    return widthFromLen(Math.max(dataMax, headerLen) + pad);
+    if (overrides && overrides[h]) return overrides[h];
+    return idealWidthForColumn(h, rows);
   });
-
   return `${widths.join(" ")} ${ACTIONS_WIDTH}`;
 }
 
@@ -124,39 +116,23 @@ function useLocalStorage(key, initial){
 function useRealtimeSync(state, setState) {
   const bcRef = useRef(null);
   const wsRef = useRef(null);
-
   useEffect(() => {
     try { bcRef.current = new BroadcastChannel("meco-docks"); } catch (e) {}
     const bc = bcRef.current;
-
-    function onMsg(ev) {
-      const data = ev && ev.data;
-      if (data && data.type === "APP_STATE" && data.payload) setState(data.payload);
-    }
-
+    function onMsg(ev) { const data = ev?.data; if (data?.type === "APP_STATE" && data.payload) setState(data.payload); }
     if (bc?.addEventListener) bc.addEventListener("message", onMsg);
     return () => { if (bc?.removeEventListener) bc.removeEventListener("message", onMsg); };
   }, [setState]);
-
   useEffect(() => {
-    const url = (typeof window !== "undefined") && window.MECO_WS_URL;
-    if (!url) return;
-
+    const url = (typeof window !== "undefined") && window.MECO_WS_URL; if (!url) return;
     try {
-      const ws = new WebSocket(url);
-      wsRef.current = ws;
+      const ws = new WebSocket(url); wsRef.current = ws;
       ws.addEventListener("open", () => { try { ws.send(JSON.stringify({ type: "HELLO", role: "client" })); } catch {} });
-      function onWSMessage(e) {
-        try {
-          let msg=null; try { msg = JSON.parse(e.data); } catch {}
-          if (msg?.type === "APP_STATE" && msg.payload) setState(msg.payload);
-        } catch {}
-      }
+      function onWSMessage(e) { try { let msg=null; try { msg = JSON.parse(e.data); } catch {} if (msg?.type === "APP_STATE" && msg.payload) setState(msg.payload); } catch {} }
       ws.addEventListener("message", onWSMessage);
       return () => { try { ws.removeEventListener("message", onWSMessage); ws.close(); } catch {} };
     } catch {}
   }, [setState]);
-
   useEffect(() => {
     try { bcRef.current?.postMessage?.({ type: "APP_STATE", payload: state }); } catch {}
     try { if (wsRef.current?.readyState === 1) wsRef.current.send(JSON.stringify({ type: "APP_STATE", payload: state })); } catch {}
@@ -251,7 +227,7 @@ export default function MecoDockManager(){
   const [debugOpen,setDebugOpen]=useState(false);
   const [importInfo,setImportInfo]=useState(null);
   const [syncMsg,setSyncMsg]=useState("");
-  const [dockEdit, setDockEdit] = useState({}); // edición libre de MUELLE
+  const [dockEdit, setDockEdit] = useState({});
 
   // Auth
   const [auth,setAuth]=useLocalStorage("meco-auth",{token:null,user:null});
@@ -263,6 +239,9 @@ export default function MecoDockManager(){
 
   // Orden columnas (persistente)
   const [columnOrder,setColumnOrder]=useLocalStorage("meco-colorder",DEFAULT_ORDER);
+
+  // Overrides de ancho por columna (persistente)
+  const [colWidthOverrides, setColWidthOverrides] = useLocalStorage("meco-colwidths", {});
 
   // drag & drop headers
   const dragFromIdx = useRef(null);
@@ -291,9 +270,6 @@ export default function MecoDockManager(){
       SLA_TOPE: { warn: topeWarn, crit: topeCrit, rows: topeRows },
     };
   },[app]);
-
-  function openSummary(type){ setSummary({open:true,type}); }
-  function closeSummary(){ setSummary({open:false,type:null}); }
 
   // updates
   function updateRowDirect(lado,id,patch){
@@ -430,47 +406,47 @@ export default function MecoDockManager(){
   }
   function doLogout(){ setAuth({token:null,user:null}); }
 
-  // edición/confirmación MUELLE (tabla y drawer)
+  // edición/confirmación MUELLE
   function commitDock(lado, rowId, fallbackValue="") {
     const tmp = (dockEdit[rowId] ?? "").trim();
     const toSet = tmp === "" ? "" : tmp;
     const ok = setField(lado, rowId, "MUELLE", toSet);
     if (ok) setDockEdit(prev => { const n={...prev}; delete n[rowId]; return n; });
   }
-  function cancelDock(rowId) {
-    setDockEdit(prev => { const n={...prev}; delete n[rowId]; return n; });
-  }
+  function cancelDock(rowId) { setDockEdit(prev => { const n={...prev}; delete n[rowId]; return n; }); }
 
-  // handlers drag&drop headers (robustos con dataTransfer)
+  // drag & drop headers (robusto con dataTransfer)
+  const dragFromIdxRef = dragFromIdx;
   function onHeaderDragStart(e, idx){
-    dragFromIdx.current = idx;
-    try { e.dataTransfer.setData("text/plain", String(idx)); } catch {}
-    try { e.dataTransfer.effectAllowed = "move"; } catch {}
+    dragFromIdxRef.current = idx;
+    try { e.dataTransfer.setData("text/plain", String(idx)); e.dataTransfer.effectAllowed = "move"; } catch {}
   }
-  function onHeaderDragOver(e){
-    e.preventDefault();
-    try { e.dataTransfer.dropEffect = "move"; } catch {}
-  }
+  function onHeaderDragOver(e){ e.preventDefault(); try { e.dataTransfer.dropEffect = "move"; } catch {} }
   function onHeaderDrop(e, idxTo){
     e.preventDefault();
-    let from = dragFromIdx.current;
-    if (from == null) {
-      try {
-        const d = e.dataTransfer.getData("text/plain");
-        if (d !== "") from = Number(d);
-      } catch {}
-    }
-    dragFromIdx.current = null;
+    let from = dragFromIdxRef.current;
+    if (from == null) { try { const d = e.dataTransfer.getData("text/plain"); if (d !== "") from = Number(d); } catch {} }
+    dragFromIdxRef.current = null;
     if (from==null || from===idxTo) return;
     setColumnOrder(prev=>{
-      const arr=[...prev];
-      const [moved]=arr.splice(from,1);
-      arr.splice(idxTo,0,moved);
-      return arr;
+      const arr=[...prev]; const [moved]=arr.splice(from,1); arr.splice(idxTo,0,moved); return arr;
     });
   }
 
+  // doble click en header: autoajuste (y Shift+dblclick = reset)
+  function onHeaderDoubleClick(h, visibleRows, shiftKey){
+    if (shiftKey) {
+      // reset a auto
+      setColWidthOverrides(prev=>{ const n={...prev}; delete n[h]; return n; });
+      return;
+    }
+    const w = idealWidthForColumn(h, visibleRows);
+    setColWidthOverrides(prev=>({ ...prev, [h]: w }));
+  }
+
   // render
+  const visibleRowsByLado = (lado)=>filteredRows(lado); // helper
+
   return (
     <TooltipProvider>
       <div className="w-full min-h-screen p-3 md:p-5 bg-gradient-to-b from-slate-50 to-white">
@@ -495,7 +471,6 @@ export default function MecoDockManager(){
           </div>
         </header>
 
-        {/* Línea superior de avisos SLA */}
         <AlertStrip
           waitCrit={summaryData.SLA_WAIT.crit}
           waitWarn={summaryData.SLA_WAIT.warn}
@@ -504,10 +479,8 @@ export default function MecoDockManager(){
           onOpen={(type)=>setSummary({open:true,type})}
         />
 
-        {/* Resumen */}
         <SummaryBar data={summaryData} onOpen={(type)=>setSummary({open:true,type})} />
 
-        {/* 2 columnas */}
         <div className="grid gap-3 mt-3" style={{ gridTemplateColumns: "minmax(0,1fr) 290px" }}>
           <Card>
             <CardHeader className="pb-2">
@@ -515,6 +488,7 @@ export default function MecoDockManager(){
                 <CardTitle>Operativas por lado</CardTitle>
                 <div className="flex items-center gap-2">
                   <Button size="sm" variant="outline" onClick={()=>setColumnOrder(DEFAULT_ORDER)}>Restablecer orden</Button>
+                  <Button size="sm" variant="outline" onClick={()=>setColWidthOverrides({})}>Reset anchos</Button>
                   <Button size="sm" variant="outline" onClick={()=>setDebugOpen(v=>!v)}>{debugOpen?"Ocultar diagnóstico":"Ver diagnóstico de importación"}</Button>
                 </div>
               </div>
@@ -567,13 +541,12 @@ export default function MecoDockManager(){
 
                 {LADOS.map((n)=>{
                   const rows=app.lados[n].rows;
-                  const gridTemplate=computeColumnTemplate(rows,columnOrder);
+                  const visible=visibleRowsByLado(n);
+                  const gridTemplate=computeColumnTemplate(rows,columnOrder,colWidthOverrides);
                   return (
                     <TabsContent key={n} value={n} className="mt-3">
                       <div className="border rounded-xl overflow-hidden">
-                        {/* Scroll X si hace falta */}
                         <div className="overflow-auto max-h-[84vh]">
-                          {/* Header: drag&drop + nowrap + holgura */}
                           <div
                             className="grid bg-slate-200 sticky top-0 z-10 select-none"
                             style={{gridTemplateColumns:gridTemplate, minWidth: "100%"}}
@@ -586,6 +559,8 @@ export default function MecoDockManager(){
                                 onDragStart={(e)=>onHeaderDragStart(e, idx)}
                                 onDragOver={onHeaderDragOver}
                                 onDrop={(e)=>onHeaderDrop(e, idx)}
+                                onDoubleClick={(e)=>onHeaderDoubleClick(h, visible, e.shiftKey)}
+                                isOverridden={!!colWidthOverrides[h]}
                               />
                             ))}
                             <div className="bg-slate-50 p-1.5">
@@ -593,9 +568,8 @@ export default function MecoDockManager(){
                             </div>
                           </div>
 
-                          {/* Filas */}
                           <div>
-                            {filteredRows(n).map((row)=>{
+                            {visible.map((row)=>{
                               const estado=(row.ESTADO||"").toString();
                               const sla=getSLA(row);
                               const outline=slaOutlineClasses(sla);
@@ -832,15 +806,16 @@ function DockDrawer({app,dockPanel,setDockPanel,updateRow,setField,dockEdit,setD
 }
 
 // ------------------------------ Subcomponentes UI ---------------------------
-function HeaderCell({title, draggable, onDragStart, onDragOver, onDrop}) {
+function HeaderCell({title, draggable, onDragStart, onDragOver, onDrop, onDoubleClick, isOverridden}) {
   return (
     <div
-      className="bg-slate-50 p-1.5 border-r border-slate-200 cursor-move"
+      className={`bg-slate-50 p-1.5 border-r border-slate-200 cursor-move ${isOverridden ? "ring-1 ring-indigo-300" : ""}`}
       draggable={draggable}
       onDragStart={onDragStart}
       onDragOver={onDragOver}
       onDrop={onDrop}
-      title={`Arrastra para reordenar: ${title}`}
+      onDoubleClick={onDoubleClick}
+      title={`Arrastra para reordenar. Doble-click para autoajustar · Shift+Doble-click para reset: ${title}`}
     >
       <div
         className="
@@ -858,9 +833,7 @@ function KV({label,value,wrap}){
   return (
     <div className="flex items-start justify-between gap-3">
       <div className="text-sm text-muted-foreground shrink-0">{label}</div>
-      <div className={`font-medium text-sm ${wrap ? "whitespace-pre-wrap break-words" : "truncate"}`}>
-        {value}
-      </div>
+      <div className={`font-medium text-sm ${wrap ? "whitespace-pre-wrap break-words" : "truncate"}`}>{value}</div>
     </div>
   );
 }
@@ -886,32 +859,17 @@ function AlertStrip({ waitCrit, waitWarn, topeCrit, topeWarn, onOpen }) {
         <span className="text-xs text-muted-foreground flex items-center gap-1">
           <AlertTriangle className="w-4 h-4" /> Avisos SLA:
         </span>
-
-        <button
-          onClick={()=>onOpen("SLA_WAIT")}
-          className="flex items-center gap-2 px-2 py-1 rounded-full bg-amber-100 text-amber-800 border border-amber-200 hover:bg-amber-200 transition"
-          title="Ver detalle · SLA Espera"
-        >
+        <button onClick={()=>onOpen("SLA_WAIT")} className="flex items-center gap-2 px-2 py-1 rounded-full bg-amber-100 text-amber-800 border border-amber-200 hover:bg-amber-200 transition" title="Ver detalle · SLA Espera">
           <span className="font-medium">Espera</span>
           <span className="text-[11px] px-1 rounded bg-red-200 text-red-800">Crit: {waitCrit}</span>
           <span className="text-[11px] px-1 rounded bg-amber-200 text-amber-800">Aviso: {waitWarn}</span>
         </button>
-
-        <button
-          onClick={()=>onOpen("SLA_TOPE")}
-          className="flex items-center gap-2 px-2 py-1 rounded-full bg-red-100 text-red-800 border border-red-200 hover:bg-red-200 transition"
-          title="Ver detalle · SLA Tope"
-        >
+        <button onClick={()=>onOpen("SLA_TOPE")} className="flex items-center gap-2 px-2 py-1 rounded-full bg-red-100 text-red-800 border border-red-200 hover:bg-red-200 transition" title="Ver detalle · SLA Tope">
           <span className="font-medium">Tope</span>
           <span className="text-[11px] px-1 rounded bg-red-300 text-red-900">Crit: {topeCrit}</span>
           <span className="text-[11px] px-1 rounded bg-amber-200 text-amber-800">Aviso: {topeWarn}</span>
         </button>
-
-        {!hasAny && (
-          <span className="text-xs text-emerald-700 bg-emerald-100 border border-emerald-200 px-2 py-0.5 rounded-full">
-            Sin avisos SLA en este momento
-          </span>
-        )}
+        {!hasAny && <span className="text-xs text-emerald-700 bg-emerald-100 border border-emerald-200 px-2 py-0.5 rounded-full">Sin avisos SLA en este momento</span>}
       </div>
     </div>
   );
@@ -951,16 +909,13 @@ function SummaryBar({data,onOpen}){
 
 function SummaryModal({open,type,data,onClose}){
   if(!open) return null;
-
-  let title="Resumen";
-  let rows=[];
+  let title="Resumen", rows=[];
   if(type==="OK"){ title="Resumen · OK"; rows=data.OK; }
   else if(type==="CARGANDO"){ title="Resumen · Cargando"; rows=data.CARGANDO; }
   else if(type==="ANULADO"){ title="Resumen · Anulado"; rows=data.ANULADO; }
   else if(type==="INCIDENCIAS"){ title="Resumen · Incidencias"; rows=data.INCIDENCIAS; }
   else if(type==="SLA_WAIT"){ title="Resumen · SLA Espera"; rows=data.SLA_WAIT.rows; }
   else if(type==="SLA_TOPE"){ title="Resumen · SLA Tope"; rows=data.SLA_TOPE.rows; }
-
   return (
     <>
       <div className="fixed inset-0 bg-black/30 z-[9998]" onClick={onClose}/>
