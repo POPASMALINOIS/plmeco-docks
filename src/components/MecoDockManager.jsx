@@ -1,4 +1,4 @@
-// MecoDockManager.jsx — Llegada Real/Salida Real 90px, resto de horas 80px, Drawer OK, "Vaciar lado" blindado
+// MecoDockManager.jsx — Fix edición MUELLE (validación en blur + revert), Llegada/Salida REAL 100px
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -83,11 +83,11 @@ const HEADER_TEXT_CLASS = "text-[9px] leading-none font-semibold text-muted-fore
 /* ==================== Anchos forzados en PX ==================== */
 const TIME_COLS = new Set(["LLEGADA","LLEGADA REAL","SALIDA","SALIDA REAL","SALIDA TOPE"]); // HH:mm
 const PX_TIME = 80;          // Horas estándar (LLEGADA, SALIDA, SALIDA TOPE)
-const PX_TIME_REAL = 90;     // Horas "real" (LLEGADA REAL, SALIDA REAL)
+const PX_TIME_REAL = 100;    // Horas "real" (LLEGADA REAL, SALIDA REAL) — solicitado
 const PX_MUELLE = 90;        // MUELLE
 const PX_ESTADO = 130;       // ESTADO
 
-// Ajustes solicitados
+// Ajustes columnas
 const PX_TRANSPORTISTA = 160; // reducido
 const PX_MATRICULA = 120;     // reducido
 const PX_DESTINO = 360;       // aumentado
@@ -104,9 +104,9 @@ const FIXED_PX = {
   "ESTADO": PX_ESTADO,
   // Horas:
   "LLEGADA": PX_TIME,
-  "LLEGADA REAL": PX_TIME_REAL, // 90px
+  "LLEGADA REAL": PX_TIME_REAL, // 100px
   "SALIDA": PX_TIME,
-  "SALIDA REAL": PX_TIME_REAL,  // 90px
+  "SALIDA REAL": PX_TIME_REAL,  // 100px
   "SALIDA TOPE": PX_TIME,
 };
 const ACTIONS_PX = 44; // columna Acciones
@@ -239,6 +239,9 @@ export default function MecoDockManager(){
   // Orden columnas (persistente)
   const [columnOrder,setColumnOrder]=useLocalStorage("meco-colorder",DEFAULT_ORDER);
 
+  // refs para edición de muelle (guardar valor previo y validar en blur)
+  const muPrevRef = useRef({}); // { [rowId]: prevValue }
+
   // DnD encabezados
   const dragFromIdx = useRef(null);
   function onHeaderDragStart(e, idx){
@@ -286,7 +289,7 @@ export default function MecoDockManager(){
     };
   },[app]);
 
-  // helpers de edición
+  // helpers generales
   function updateRowDirect(lado,id,patch){
     setApp(prev=>{
       const prevRows = prev?.lados?.[lado]?.rows || [];
@@ -295,26 +298,40 @@ export default function MecoDockManager(){
     });
   }
   function setField(lado,id,field,value){
-    if(field==="MUELLE"){
-      if(!isValidDockValue(value)){ alert(`El muelle "${value}" no es válido. Solo: ${DOCKS.join(", ")}.`); return false; }
-      const {conflict,info}=checkDockConflict(app,value,lado,id);
-      if(conflict){
-        const ok=confirm([
-          `El muelle ${value} está ${info.estado} en ${info.lado}.`,
-          `Matrícula: ${info.row.MATRICULA||"?"} · Destino: ${info.row.DESTINO||"?"}`,
-          ``,
-          `¿Asignarlo igualmente?`,
-        ].join("\n")); if(!ok) return false;
-      }
-    }
+    // Validación directa (solo se usa ya para campos no muelle)
     updateRowDirect(lado,id,{[field]:value});
     return true;
   }
-  function updateRow(lado,id,patch){
-    if(Object.prototype.hasOwnProperty.call(patch,"MUELLE")) return setField(lado,id,"MUELLE",patch.MUELLE);
-    updateRowDirect(lado,id,patch);
-    return true;
+
+  // commit para MUELLE en blur
+  function commitDockValue(lado, rowId, newValue){
+    const prevValue = muPrevRef.current[rowId] ?? "";
+    const value = (newValue ?? "").toString().trim();
+
+    if(value===""){
+      updateRowDirect(lado,rowId,{MUELLE:""});
+      return;
+    }
+    if(!isValidDockValue(value)){
+      alert(`El muelle "${newValue}" no es válido. Permitidos: ${DOCKS.join(", ")}.`);
+      updateRowDirect(lado,rowId,{MUELLE: prevValue});
+      return;
+    }
+    const {conflict,info}=checkDockConflict(app,value,lado,rowId);
+    if(conflict){
+      const ok=confirm(
+        `El muelle ${value} está ${info.estado} en ${info.lado}.\n`+
+        `Matrícula: ${info.row.MATRICULA||"?"} · Destino: ${info.row.DESTINO||"?"}\n\n`+
+        `¿Asignarlo igualmente?`
+      );
+      if(!ok){
+        updateRowDirect(lado,rowId,{MUELLE: prevValue});
+        return;
+      }
+    }
+    updateRowDirect(lado,rowId,{MUELLE:value});
   }
+
   function addRow(lado){
     setApp(prev=>{
       const prevRows = prev?.lados?.[lado]?.rows || [];
@@ -500,7 +517,7 @@ export default function MecoDockManager(){
                               />
                             ))}
                             <div className={HEADER_CELL_CLASS}>
-                              <div className={`${HEADER_TEXT_CLASS} text-center whitespace-nowrap`}>Acc.</div>
+                              <div className="text-[9px] leading-none font-semibold text-muted-foreground uppercase tracking-wide text-center whitespace-nowrap">Acc.</div>
                             </div>
                           </div>
 
@@ -519,12 +536,12 @@ export default function MecoDockManager(){
                                         return (
                                           <div key={h} className="p-1 border-r border-slate-100/60 flex items-center">
                                             {isEstado ? (
-                                              <select className="h-8 w-full border rounded px-2 bg-transparent text-sm" value={(row?.ESTADO??"").toString()} onChange={(e)=>updateRow(n,row.id,{ESTADO:e.target.value})}>
+                                              <select className="h-8 w-full border rounded px-2 bg-transparent text-sm" value={(row?.ESTADO??"").toString()} onChange={(e)=>setField(n,row.id,"ESTADO",e.target.value)}>
                                                 <option value="">Seleccionar</option>
                                                 {CAMION_ESTADOS.map(opt=><option key={opt} value={opt}>{opt}</option>)}
                                               </select>
                                             ) : isInc ? (
-                                              <select className="h-8 w-full border rounded px-2 bg-transparent text-sm" value={(row?.INCIDENCIAS??"").toString()} onChange={(e)=>updateRow(n,row.id,{INCIDENCIAS:e.target.value})}>
+                                              <select className="h-8 w-full border rounded px-2 bg-transparent text-sm" value={(row?.INCIDENCIAS??"").toString()} onChange={(e)=>setField(n,row.id,"INCIDENCIAS",e.target.value)}>
                                                 <option value="">Seleccionar</option>
                                                 {INCIDENTES.map(opt=><option key={opt} value={opt}>{opt}</option>)}
                                               </select>
@@ -532,13 +549,15 @@ export default function MecoDockManager(){
                                               <input
                                                 className="h-8 w-full border rounded px-2 bg-white text-sm"
                                                 value={(row?.[h] ?? "").toString()}
-                                                onChange={(e)=> setField(n, row.id, "MUELLE", e.target.value)}
+                                                onFocus={(e)=>{ muPrevRef.current[row.id] = (row?.[h] ?? "").toString(); }}
+                                                onChange={(e)=> updateRowDirect(n, row.id, { MUELLE: e.target.value })}
+                                                onBlur={(e)=> commitDockValue(n, row.id, e.target.value)}
                                                 placeholder="nº muelle"
                                               />
                                             ) : (
                                               <input className="h-8 w-full border rounded px-2 bg-transparent text-sm"
                                                 value={(row?.[h]??"").toString()}
-                                                onChange={(e)=>updateRow(n,row.id,{[h]:e.target.value})}
+                                                onChange={(e)=>setField(n,row.id,h,e.target.value)}
                                               />
                                             )}
                                           </div>
@@ -575,8 +594,10 @@ export default function MecoDockManager(){
           app={app}
           dockPanel={dockPanel}
           setDockPanel={setDockPanel}
-          updateRow={updateRow}
+          updateRowDirect={updateRowDirect}
+          commitDockValue={commitDockValue}
           setField={setField}
+          muPrevRef={muPrevRef}
         />
 
         {/* Modal resumen */}
@@ -628,7 +649,7 @@ function DockRight({app,setDockPanel,dockPanel}){
 }
 
 /* ============================== Drawer lateral ============================ */
-function DockDrawer({app,dockPanel,setDockPanel,updateRow,setField}){
+function DockDrawer({app,dockPanel,setDockPanel,updateRowDirect,commitDockValue,setField,muPrevRef}){
   const open = !!dockPanel?.open;
   if(!open) return null;
 
@@ -669,8 +690,8 @@ function DockDrawer({app,dockPanel,setDockPanel,updateRow,setField}){
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
-                <InputX label="Llegada real" value={(row["LLEGADA REAL"]??"").toString()} onChange={(v)=>updateRow(lado,row.id,{"LLEGADA REAL":v})} placeholder="hh:mm / ISO" />
-                <InputX label="Salida real" value={(row["SALIDA REAL"]??"").toString()} onChange={(v)=>updateRow(lado,row.id,{"SALIDA REAL":v})} placeholder="hh:mm / ISO" />
+                <InputX label="Llegada real" value={(row["LLEGADA REAL"]??"").toString()} onChange={(v)=>setField(lado,row.id,"LLEGADA REAL",v)} placeholder="hh:mm / ISO" />
+                <InputX label="Salida real" value={(row["SALIDA REAL"]??"").toString()} onChange={(v)=>setField(lado,row.id,"SALIDA REAL",v)} placeholder="hh:mm / ISO" />
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -679,18 +700,20 @@ function DockDrawer({app,dockPanel,setDockPanel,updateRow,setField}){
                   <input
                     className="h-9 w-full border rounded px-2 bg-white text-sm"
                     value={(row["MUELLE"] ?? "").toString()}
-                    onChange={(e)=> setField(lado, row.id, "MUELLE", e.target.value)}
+                    onFocus={()=>{ muPrevRef.current[row.id] = (row["MUELLE"] ?? "").toString(); }}
+                    onChange={(e)=> updateRowDirect(lado, row.id, { MUELLE: e.target.value })}
+                    onBlur={(e)=> commitDockValue(lado, row.id, e.target.value)}
                     placeholder="nº muelle"
                   />
                   <div className="text-[10px] text-muted-foreground mt-1">Permitidos: 312–369 (según lista)</div>
                 </div>
 
-                <InputX label="Precinto" value={(row["PRECINTO"]??"").toString()} onChange={(v)=>updateRow(lado,row.id,{"PRECINTO":v})} placeholder="Precinto" />
+                <InputX label="Precinto" value={(row["PRECINTO"]??"").toString()} onChange={(v)=>setField(lado,row.id,"PRECINTO",v)} placeholder="Precinto" />
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <SelectX label="Incidencias" value={(row["INCIDENCIAS"]??"").toString()} onChange={(v)=>updateRow(lado,row.id,{"INCIDENCIAS":v})} options={INCIDENTES} />
-                <SelectX label="Estado" value={(row.ESTADO??"").toString()} onChange={(v)=>updateRow(lado,row.id,{"ESTADO":v})} options={CAMION_ESTADOS} />
+                <SelectX label="Incidencias" value={(row["INCIDENCIAS"]??"").toString()} onChange={(v)=>setField(lado,row.id,"INCIDENCIAS",v)} options={INCIDENTES} />
+                <SelectX label="Estado" value={(row.ESTADO??"").toString()} onChange={(v)=>setField(lado,row.id,"ESTADO",v)} options={CAMION_ESTADOS} />
               </div>
 
               <div>
@@ -698,7 +721,7 @@ function DockDrawer({app,dockPanel,setDockPanel,updateRow,setField}){
                 <textarea
                   className="min-h-[90px] w-full border rounded px-2 py-1 bg-white text-sm"
                   value={(row.OBSERVACIONES??"").toString()}
-                  onChange={(e)=>updateRow(lado,row.id,{OBSERVACIONES:e.target.value})}
+                  onChange={(e)=>setField(lado,row.id,"OBSERVACIONES",e.target.value)}
                   placeholder="Añade notas"
                 />
               </div>
@@ -900,7 +923,7 @@ function exportXLSX(lado,app,columnOrder){
   const ws=XLSX.utils.json_to_sheet(data,{header:headers,skipHeader:false});
   const colWidths=headers.map(h=>{
     if (h in FIXED_PX) return { wpx: FIXED_PX[h] };
-    if (TIME_COLS.has(h)) return { wpx: 140 }; // ancho export visual; no afecta a grid
+    if (TIME_COLS.has(h)) return { wpx: 140 };
     return { wpx: 140 };
   });
   ws["!cols"]=colWidths;
