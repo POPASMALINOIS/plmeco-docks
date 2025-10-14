@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { Download, FileUp, Plus, Trash2, Upload, RefreshCw, LogIn, LogOut, X, AlertTriangle } from "lucide-react";
+import { Download, FileUp, Plus, Trash2, Upload, RefreshCw, LogIn, LogOut, X, AlertTriangle, GripVertical } from "lucide-react";
 import * as XLSX from "xlsx";
 import { motion } from "framer-motion";
 
@@ -271,6 +271,9 @@ export default function MecoDockManager(){
     };
   },[app]);
 
+  function openSummary(type){ setSummary({open:true,type}); }
+  function closeSummary(){ setSummary({open:false,type:null}); }
+
   // updates
   function updateRowDirect(lado,id,patch){
     setApp(prev=>{
@@ -436,7 +439,6 @@ export default function MecoDockManager(){
   // doble click en header: autoajuste (y Shift+dblclick = reset)
   function onHeaderDoubleClick(h, visibleRows, shiftKey){
     if (shiftKey) {
-      // reset a auto
       setColWidthOverrides(prev=>{ const n={...prev}; delete n[h]; return n; });
       return;
     }
@@ -445,7 +447,7 @@ export default function MecoDockManager(){
   }
 
   // render
-  const visibleRowsByLado = (lado)=>filteredRows(lado); // helper
+  const visibleRowsByLado = (lado)=>filteredRows(lado);
 
   return (
     <TooltipProvider>
@@ -807,24 +809,44 @@ function DockDrawer({app,dockPanel,setDockPanel,updateRow,setField,dockEdit,setD
 
 // ------------------------------ Subcomponentes UI ---------------------------
 function HeaderCell({title, draggable, onDragStart, onDragOver, onDrop, onDoubleClick, isOverridden}) {
+  function stopDragIfDoubleClick(e) {
+    if (e.detail && e.detail > 1) {
+      e.stopPropagation();
+      try { e.preventDefault(); } catch {}
+    }
+  }
   return (
     <div
-      className={`bg-slate-50 p-1.5 border-r border-slate-200 cursor-move ${isOverridden ? "ring-1 ring-indigo-300" : ""}`}
-      draggable={draggable}
-      onDragStart={onDragStart}
-      onDragOver={onDragOver}
-      onDrop={onDrop}
+      className={`bg-slate-50 p-1.5 border-r border-slate-200 select-none`}
       onDoubleClick={onDoubleClick}
-      title={`Arrastra para reordenar. Doble-click para autoajustar · Shift+Doble-click para reset: ${title}`}
+      onDoubleClickCapture={onDoubleClick}
+      title={`Arrastra el asa para reordenar. Doble-click para autoajustar · Shift+Doble-click para reset: ${title}`}
+      onMouseDown={stopDragIfDoubleClick}
     >
-      <div
-        className="
-          text-[10px] leading-tight font-semibold text-muted-foreground uppercase tracking-wide
-          flex items-center
-          whitespace-nowrap
-        "
-      >
-        <span className="block">{title}</span>
+      <div className="flex items-center gap-1 whitespace-nowrap">
+        <div
+          className={`shrink-0 rounded px-0.5 cursor-grab active:cursor-grabbing ${isOverridden ? "ring-1 ring-indigo-300" : ""}`}
+          draggable={draggable}
+          onDragStart={onDragStart}
+          onDragOver={onDragOver}
+          onDrop={onDrop}
+          onMouseDown={stopDragIfDoubleClick}
+          title="Arrastra para reordenar"
+        >
+          <GripVertical className="w-3.5 h-3.5 text-slate-400" />
+        </div>
+        <span
+          className="text-[10px] leading-tight font-semibold text-muted-foreground uppercase tracking-wide"
+          onDoubleClick={onDoubleClick}
+          onDoubleClickCapture={onDoubleClick}
+        >
+          {title}
+        </span>
+        {isOverridden && (
+          <span className="ml-1 inline-block px-1 py-[1px] text-[9px] rounded bg-indigo-100 text-indigo-700">
+            FIX
+          </span>
+        )}
       </div>
     </div>
   );
