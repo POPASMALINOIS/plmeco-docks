@@ -1,4 +1,4 @@
-// MecoDockManager.jsx — Anchos fijos + Vaciar lado blindado + TRANSPORTISTA reducido
+// MecoDockManager.jsx — TRANSPORTISTA 160px, DESTINO 360px, Drawer reactivado y editable, "Vaciar lado" blindado
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -86,10 +86,10 @@ const PX_TIME = 80;      // 80px para horas
 const PX_MUELLE = 90;    // MUELLE
 const PX_ESTADO = 130;   // ESTADO
 
-// Ajustes pedidos
-const PX_TRANSPORTISTA = 180; // NUEVO: reducimos Transportista
-const PX_MATRICULA = 120;
-const PX_DESTINO = 300;
+// Ajustes solicitados
+const PX_TRANSPORTISTA = 160; // reducido
+const PX_MATRICULA = 120;     // reducido
+const PX_DESTINO = 360;       // aumentado
 const PX_PRECINTO = 120;
 const PX_OBSERVACIONES = 260;
 
@@ -110,12 +110,8 @@ const FIXED_PX = {
 const ACTIONS_PX = 44; // columna Acciones
 
 function px(n){ return `${Math.max(40, Math.floor(n))}px`; } // mínimo 40px
-
 function computeColumnTemplate(_rows, order){
-  const widths = (order||[]).map((h)=>{
-    if (h in FIXED_PX) return px(FIXED_PX[h]);
-    return "minmax(120px,1fr)";
-  });
+  const widths = (order||[]).map((h)=> (h in FIXED_PX) ? px(FIXED_PX[h]) : "minmax(120px,1fr)");
   return `${widths.join(" ")} ${px(ACTIONS_PX)}`;
 }
 
@@ -240,6 +236,24 @@ export default function MecoDockManager(){
 
   // Orden columnas (persistente)
   const [columnOrder,setColumnOrder]=useLocalStorage("meco-colorder",DEFAULT_ORDER);
+
+  // DnD encabezados
+  const dragFromIdx = useRef(null);
+  function onHeaderDragStart(e, idx){
+    dragFromIdx.current = idx;
+    try { e.dataTransfer.setData("text/plain", String(idx)); e.dataTransfer.effectAllowed = "move"; } catch {}
+  }
+  function onHeaderDragOver(e){ e.preventDefault(); try { e.dataTransfer.dropEffect = "move"; } catch {} }
+  function onHeaderDrop(e, idxTo){
+    e.preventDefault();
+    let from = dragFromIdx.current;
+    if (from == null) { try { const d = e.dataTransfer.getData("text/plain"); if (d !== "") from = Number(d); } catch {} }
+    dragFromIdx.current = null;
+    if (from==null || from===idxTo) return;
+    setColumnOrder(prev=>{
+      const arr=[...prev]; const [moved]=arr.splice(from,1); arr.splice(idxTo,0,moved); return arr;
+    });
+  }
 
   useRealtimeSync(app,setApp);
   useEffect(()=>{ const t=setInterval(()=>setClock(nowISO()),1000); return ()=>clearInterval(t); },[]);
@@ -392,24 +406,6 @@ export default function MecoDockManager(){
   async function uploadState(){ setSyncMsg("Subiendo…"); setTimeout(()=>setSyncMsg(""),1000); }
   async function downloadState(){ setSyncMsg("Cargando…"); setTimeout(()=>setSyncMsg(""),1000); }
   function doLogout(){ setAuth({token:null,user:null}); }
-
-  // drag & drop headers
-  const dragFromIdx = useRef(null);
-  function onHeaderDragStart(e, idx){
-    dragFromIdx.current = idx;
-    try { e.dataTransfer.setData("text/plain", String(idx)); e.dataTransfer.effectAllowed = "move"; } catch {}
-  }
-  function onHeaderDragOver(e){ e.preventDefault(); try { e.dataTransfer.dropEffect = "move"; } catch {} }
-  function onHeaderDrop(e, idxTo){
-    e.preventDefault();
-    let from = dragFromIdx.current;
-    if (from == null) { try { const d = e.dataTransfer.getData("text/plain"); if (d !== "") from = Number(d); } catch {} }
-    dragFromIdx.current = null;
-    if (from==null || from===idxTo) return;
-    setColumnOrder(prev=>{
-      const arr=[...prev]; const [moved]=arr.splice(from,1); arr.splice(idxTo,0,moved); return arr;
-    });
-  }
 
   // render
   const visibleRowsByLado = (lado)=>filteredRows(lado);
@@ -572,6 +568,15 @@ export default function MecoDockManager(){
           <DockRight app={app} setDockPanel={setDockPanel} dockPanel={dockPanel} />
         </div>
 
+        {/* Drawer muelles (REACTIVADO) */}
+        <DockDrawer
+          app={app}
+          dockPanel={dockPanel}
+          setDockPanel={setDockPanel}
+          updateRow={updateRow}
+          setField={setField}
+        />
+
         {/* Modal resumen */}
         <SummaryModal open={summary.open} type={summary.type} data={summaryData} onClose={()=>setSummary({open:false,type:null})} />
 
@@ -620,77 +625,83 @@ function DockRight({app,setDockPanel,dockPanel}){
   );
 }
 
-/* ==================== Barra de resumen & Modal =================== */
-function SummaryBar({data,onOpen}){
-  const cards = [
-    { key:"OK", title:"OK", count:data.OK.length, color:"bg-emerald-600", sub:"Camiones en OK" },
-    { key:"CARGANDO", title:"Cargando", count:data.CARGANDO.length, color:"bg-amber-500", sub:"Camiones cargando" },
-    { key:"ANULADO", title:"Anulado", count:data.ANULADO.length, color:"bg-red-600", sub:"Camiones anulados" },
-    { key:"INCIDENCIAS", title:"Incidencias", count:data.INCIDENCIAS.length, color:"bg-indigo-600", sub:"Con incidencia" },
-    { key:"SLA_WAIT", title:"SLA Espera", count:data.SLA_WAIT.crit + data.SLA_WAIT.warn, color:"bg-amber-600", sub:"Crit / Aviso", badgeL:data.SLA_WAIT.crit, badgeR:data.SLA_WAIT.warn },
-    { key:"SLA_TOPE", title:"SLA Tope", count:data.SLA_TOPE.crit + data.SLA_TOPE.warn, color:"bg-red-700", sub:"Crit / Aviso", badgeL:data.SLA_TOPE.crit, badgeR:data.SLA_TOPE.warn },
-  ];
-  return (
-    <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
-      {cards.map(c=>(
-        <button key={c.key} onClick={()=>onOpen(c.key)} className="rounded-2xl p-3 text-left shadow hover:shadow-md transition border bg-white">
-          <div className="flex items-center justify-between">
-            <div className="text-sm text-muted-foreground">{c.title}</div>
-            <span className={`inline-flex items-center justify-center w-7 h-7 text-white text-sm font-semibold rounded-full ${c.color}`}>{c.count}</span>
-          </div>
-          {c.badgeL!=null ? (
-            <div className="mt-2 flex items-center gap-2">
-              <span className="text-[11px] inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-100 text-red-700 font-medium">Crit: {c.badgeL}</span>
-              <span className="text-[11px] inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 font-medium">Aviso: {c.badgeR}</span>
-            </div>
-          ) : (
-            <div className="mt-2 text-xs text-slate-500">{c.sub}</div>
-          )}
-        </button>
-      ))}
-    </div>
-  );
-}
-function SummaryModal({open,type,data,onClose}){
+/* ============================== Drawer lateral ============================ */
+function DockDrawer({app,dockPanel,setDockPanel,updateRow,setField}){
+  const open = !!dockPanel?.open;
   if(!open) return null;
-  let title="Resumen", rows=[];
-  if(type==="OK"){ title="Resumen · OK"; rows=data.OK; }
-  else if(type==="CARGANDO"){ title="Resumen · Cargando"; rows=data.CARGANDO; }
-  else if(type==="ANULADO"){ title="Resumen · Anulado"; rows=data.ANULADO; }
-  else if(type==="INCIDENCIAS"){ title="Resumen · Incidencias"; rows=data.INCIDENCIAS; }
-  else if(type==="SLA_WAIT"){ title="Resumen · SLA Espera"; rows=data.SLA_WAIT.rows; }
-  else if(type==="SLA_TOPE"){ title="Resumen · SLA Tope"; rows=data.SLA_TOPE.rows; }
+
+  const { lado, rowId, dock } = dockPanel;
+  const row = (lado && rowId) ? (app?.lados?.[lado]?.rows||[]).find(r=>r.id===rowId) : null;
+
   return (
     <>
-      <div className="fixed inset-0 bg-black/30 z-[9998]" onClick={onClose}/>
-      <div className="fixed left-1/2 top-6 -translate-x-1/2 z-[9999] w-[95vw] max-w-6xl bg-white rounded-2xl shadow-2xl border overflow-hidden">
-        <div className="px-4 py-3 border-b flex items-center justify-between">
-          <div className="font-semibold">{title}</div>
-          <Button size="icon" variant="ghost" onClick={onClose}><X className="w-5 h-5" /></Button>
+      <div className="fixed inset-0 bg-black/30 z-[9998]" onClick={()=>setDockPanel({open:false,dock:undefined,lado:undefined,rowId:undefined})}/>
+      <div
+        className="
+          fixed right-0 top-0 h-screen
+          w-[400px] sm:w-[520px] md:w-[600px]
+          bg-white z-[9999] shadow-2xl border-l pointer-events-auto
+          flex flex-col
+        "
+        onMouseDown={(e)=>e.stopPropagation()}
+        onClick={(e)=>e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-4 py-3 border-b">
+          <div className="font-semibold">Muelle {dock ?? "—"}</div>
+          <Button size="icon" variant="ghost" onClick={()=>setDockPanel({open:false,dock:undefined,lado:undefined,rowId:undefined})}><X className="w-5 h-5" /></Button>
         </div>
-        <div className="p-3 max-h-[75vh] overflow-auto">
-          <div className="grid grid-cols-[90px_140px_minmax(140px,1fr)_80px_120px_120px_minmax(160px,1fr)] gap-2 text-[11px] font-semibold text-muted-foreground uppercase tracking-wide mb-2">
-            <div>Lado</div><div>Matrícula</div><div>Destino</div><div>Muelle</div><div>Llegada real</div><div>Salida real</div><div>{type==="INCIDENCIAS"?"Incidencias": type?.startsWith("SLA_")?"Motivo": "Estado"}</div>
-          </div>
-          <div className="divide-y">
-            {rows.map((r)=>(
-              <div key={r.id} className="grid grid-cols-[90px_140px_minmax(140px,1fr)_80px_120px_120px_minmax(160px,1fr)] gap-2 py-2 text-sm">
-                <div className="font-medium">{r._lado}</div>
-                <div className="truncate">{r.MATRICULA||"—"}</div>
-                <div className="truncate">{r.DESTINO||"—"}</div>
-                <div>{r.MUELLE||"—"}</div>
-                <div>{r["LLEGADA REAL"]||"—"}</div>
-                <div>{r["SALIDA REAL"]||"—"}</div>
-                <div>
-                  {type==="INCIDENCIAS" ? (r.INCIDENCIAS||"—")
-                   : type==="SLA_WAIT"  ? (r._sla?.tip || "Espera en muelle")
-                   : type==="SLA_TOPE"  ? (r._sla?.tip || "Salida tope")
-                   : (r.ESTADO||"—")}
+
+        <div className="p-4 space-y-3 overflow-y-auto grow">
+          {!lado || !rowId || !row ? (
+            <div className="text-sm text-muted-foreground">Muelle libre o no hay fila asociada.</div>
+          ) : (
+            <>
+              <div className="grid grid-cols-2 gap-3">
+                <KV label="Lado" value={lado} />
+                <KV label="Matrícula" value={row.MATRICULA || "—"} />
+                <KV label="Destino" value={row.DESTINO || "—"} wrap />
+                <div className="flex items-center justify-between">
+                  <div className="text-sm text-muted-foreground">Estado</div>
+                  {(row.ESTADO||"") ? <Badge className={`${estadoBadgeColor(row.ESTADO)} text-white`}>{row.ESTADO}</Badge> : <span className="text-slate-400 text-sm">—</span>}
                 </div>
               </div>
-            ))}
-            {rows.length===0 && <div className="text-sm text-muted-foreground py-6 text-center">No hay elementos para mostrar.</div>}
-          </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                <InputX label="Llegada real" value={(row["LLEGADA REAL"]??"").toString()} onChange={(v)=>updateRow(lado,row.id,{"LLEGADA REAL":v})} placeholder="hh:mm / ISO" />
+                <InputX label="Salida real" value={(row["SALIDA REAL"]??"").toString()} onChange={(v)=>updateRow(lado,row.id,{"SALIDA REAL":v})} placeholder="hh:mm / ISO" />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide leading-tight">Muelle</div>
+                  <input
+                    className="h-9 w-full border rounded px-2 bg-white text-sm"
+                    value={(row["MUELLE"] ?? "").toString()}
+                    onChange={(e)=> setField(lado, row.id, "MUELLE", e.target.value)}
+                    placeholder="nº muelle"
+                  />
+                  <div className="text-[10px] text-muted-foreground mt-1">Permitidos: 312–369 (según lista)</div>
+                </div>
+
+                <InputX label="Precinto" value={(row["PRECINTO"]??"").toString()} onChange={(v)=>updateRow(lado,row.id,{"PRECINTO":v})} placeholder="Precinto" />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <SelectX label="Incidencias" value={(row["INCIDENCIAS"]??"").toString()} onChange={(v)=>updateRow(lado,row.id,{"INCIDENCIAS":v})} options={INCIDENTES} />
+                <SelectX label="Estado" value={(row.ESTADO??"").toString()} onChange={(v)=>updateRow(lado,row.id,{"ESTADO":v})} options={CAMION_ESTADOS} />
+              </div>
+
+              <div>
+                <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide leading-tight">Observaciones</div>
+                <textarea
+                  className="min-h-[90px] w-full border rounded px-2 py-1 bg-white text-sm"
+                  value={(row.OBSERVACIONES??"").toString()}
+                  onChange={(e)=>updateRow(lado,row.id,{OBSERVACIONES:e.target.value})}
+                  placeholder="Añade notas"
+                />
+              </div>
+            </>
+          )}
         </div>
       </div>
     </>
@@ -763,6 +774,84 @@ function AlertStrip({ waitCrit, waitWarn, topeCrit, topeWarn, onOpen }) {
         {!hasAny && <span className="text-xs text-emerald-700 bg-emerald-100 border border-emerald-200 px-2 py-0.5 rounded-full">Sin avisos SLA en este momento</span>}
       </div>
     </div>
+  );
+}
+
+/* ==================== Barra de resumen & Modal =================== */
+function SummaryBar({data,onOpen}){
+  const cards = [
+    { key:"OK", title:"OK", count:data.OK.length, color:"bg-emerald-600", sub:"Camiones en OK" },
+    { key:"CARGANDO", title:"Cargando", count:data.CARGANDO.length, color:"bg-amber-500", sub:"Camiones cargando" },
+    { key:"ANULADO", title:"Anulado", count:data.ANULADO.length, color:"bg-red-600", sub:"Camiones anulados" },
+    { key:"INCIDENCIAS", title:"Incidencias", count:data.INCIDENCIAS.length, color:"bg-indigo-600", sub:"Con incidencia" },
+    { key:"SLA_WAIT", title:"SLA Espera", count:data.SLA_WAIT.crit + data.SLA_WAIT.warn, color:"bg-amber-600", sub:"Crit / Aviso", badgeL:data.SLA_WAIT.crit, badgeR:data.SLA_WAIT.warn },
+    { key:"SLA_TOPE", title:"SLA Tope", count:data.SLA_TOPE.crit + data.SLA_TOPE.warn, color:"bg-red-700", sub:"Crit / Aviso", badgeL:data.SLA_TOPE.crit, badgeR:data.SLA_TOPE.warn },
+  ];
+  return (
+    <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
+      {cards.map(c=>(
+        <button key={c.key} onClick={()=>onOpen(c.key)} className="rounded-2xl p-3 text-left shadow hover:shadow-md transition border bg-white">
+          <div className="flex items-center justify-between">
+            <div className="text-sm text-muted-foreground">{c.title}</div>
+            <span className={`inline-flex items-center justify-center w-7 h-7 text-white text-sm font-semibold rounded-full ${c.color}`}>{c.count}</span>
+          </div>
+          {c.badgeL!=null ? (
+            <div className="mt-2 flex items-center gap-2">
+              <span className="text-[11px] inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-100 text-red-700 font-medium">Crit: {c.badgeL}</span>
+              <span className="text-[11px] inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 font-medium">Aviso: {c.badgeR}</span>
+            </div>
+          ) : (
+            <div className="mt-2 text-xs text-slate-500">{c.sub}</div>
+          )}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function SummaryModal({open,type,data,onClose}){
+  if(!open) return null;
+  let title="Resumen", rows=[];
+  if(type==="OK"){ title="Resumen · OK"; rows=data.OK; }
+  else if(type==="CARGANDO"){ title="Resumen · Cargando"; rows=data.CARGANDO; }
+  else if(type==="ANULADO"){ title="Resumen · Anulado"; rows=data.ANULADO; }
+  else if(type==="INCIDENCIAS"){ title="Resumen · Incidencias"; rows=data.INCIDENCIAS; }
+  else if(type==="SLA_WAIT"){ title="Resumen · SLA Espera"; rows=data.SLA_WAIT.rows; }
+  else if(type==="SLA_TOPE"){ title="Resumen · SLA Tope"; rows=data.SLA_TOPE.rows; }
+  return (
+    <>
+      <div className="fixed inset-0 bg-black/30 z-[9998]" onClick={onClose}/>
+      <div className="fixed left-1/2 top-6 -translate-x-1/2 z-[9999] w-[95vw] max-w-6xl bg-white rounded-2xl shadow-2xl border overflow-hidden">
+        <div className="px-4 py-3 border-b flex items-center justify-between">
+          <div className="font-semibold">{title}</div>
+          <Button size="icon" variant="ghost" onClick={onClose}><X className="w-5 h-5" /></Button>
+        </div>
+        <div className="p-3 max-h-[75vh] overflow-auto">
+          <div className="grid grid-cols-[90px_140px_minmax(140px,1fr)_80px_120px_120px_minmax(160px,1fr)] gap-2 text-[11px] font-semibold text-muted-foreground uppercase tracking-wide mb-2">
+            <div>Lado</div><div>Matrícula</div><div>Destino</div><div>Muelle</div><div>Llegada real</div><div>Salida real</div><div>{type==="INCIDENCIAS"?"Incidencias": type?.startsWith("SLA_")?"Motivo": "Estado"}</div>
+          </div>
+          <div className="divide-y">
+            {rows.map((r)=>(
+              <div key={r.id} className="grid grid-cols-[90px_140px_minmax(140px,1fr)_80px_120px_120px_minmax(160px,1fr)] gap-2 py-2 text-sm">
+                <div className="font-medium">{r._lado}</div>
+                <div className="truncate">{r.MATRICULA||"—"}</div>
+                <div className="truncate">{r.DESTINO||"—"}</div>
+                <div>{r.MUELLE||"—"}</div>
+                <div>{r["LLEGADA REAL"]||"—"}</div>
+                <div>{r["SALIDA REAL"]||"—"}</div>
+                <div>
+                  {type==="INCIDENCIAS" ? (r.INCIDENCIAS||"—")
+                   : type==="SLA_WAIT"  ? (r._sla?.tip || "Espera en muelle")
+                   : type==="SLA_TOPE"  ? (r._sla?.tip || "Salida tope")
+                   : (r.ESTADO||"—")}
+                </div>
+              </div>
+            ))}
+            {rows.length===0 && <div className="text-sm text-muted-foreground py-6 text-center">No hay elementos para mostrar.</div>}
+          </div>
+        </div>
+      </div>
+    </>
   );
 }
 
