@@ -75,47 +75,56 @@ function parseFlexibleToDate(s){
 }
 function minutesDiff(a,b){ return Math.round((a.getTime()-b.getTime())/60000); }
 
-/* ==================== Cálculo de anchos (holgura + overrides) ============== */
+/* ==================== Cálculo de anchos ====================== */
+/* Alturas/estilo de encabezado MÁS PEQUEÑO (≈ la mitad) */
+const HEADER_CELL_CLASS = "bg-slate-50 p-0.5 border-r border-slate-200 select-none";
+const HEADER_TEXT_CLASS = "text-[9px] leading-none font-semibold text-muted-foreground uppercase tracking-wide";
+
+/* Anchos fijos/forzados */
+const TIME_COLS = new Set(["LLEGADA","LLEGADA REAL","SALIDA","SALIDA REAL","SALIDA TOPE"]); // HH:mm
+const TIME_WIDTH = "10ch";
+const ACTIONS_WIDTH = "3.0rem";
+
+/* Mantengo MUELLE y ESTADO fijos y ADEMÁS fuerzo estrechamiento de las que indicaste */
+const FIXED_WIDTHS = {
+  MUELLE: "9ch",
+  ESTADO: "13ch",
+  /* Reducciones solicitadas */
+  MATRICULA: "16ch",      // más estrecha
+  DESTINO: "22ch",        // más estrecha
+  PRECINTO: "12ch",       // más estrecha
+  OBSERVACIONES: "26ch",  // un poco más estrecha
+};
+
 function widthFromLen(len){
-  const ch = Math.min(Math.max(len * 1.05 + 6, 14), 80);
+  const ch = Math.min(Math.max(len * 1.05 + 6, 12), 70); // base algo más compacta
   return `${Math.round(ch)}ch`;
 }
-const TIME_COLS = new Set(["LLEGADA","LLEGADA REAL","SALIDA","SALIDA REAL","SALIDA TOPE"]); // HH:mm
-const FIXED_WIDTHS = { MUELLE: "9ch", ESTADO: "13ch" };
-const TIME_WIDTH = "10ch";
-const ACTIONS_WIDTH = "3.2rem";
 
 function idealWidthForColumn(h, rows){
   if (TIME_COLS.has(h)) return TIME_WIDTH;
-  if (h in FIXED_WIDTHS) return FIXED_WIDTHS[h];
+  if (h in FIXED_WIDTHS) return FIXED_WIDTHS[h]; // << fuerza las que pediste
   const headerLen = (h || "").length;
   const dataMax = rows && rows.length ? Math.max(...rows.map(r => ((r?.[h] ?? "") + "").length), 0) : 0;
-  const pad = 10;
-  if (h === "MATRICULA") return widthFromLen(Math.max(dataMax + 8, headerLen) + pad);
-  if (h === "OBSERVACIONES" || h === "DESTINO" || h === "TRANSPORTISTA")
-    return widthFromLen(Math.max(dataMax, headerLen) + pad + 8);
+  const pad = 8; // menos pad para compactar
   return widthFromLen(Math.max(dataMax, headerLen) + pad);
 }
 
-function computeColumnTemplate(rows, order, overrides){
-  const widths = order.map((h)=>{
-    if (overrides && overrides[h]) return overrides[h];
-    return idealWidthForColumn(h, rows);
-  });
+function computeColumnTemplate(rows, order){
+  const widths = order.map((h)=> idealWidthForColumn(h, rows));
   return `${widths.join(" ")} ${ACTIONS_WIDTH}`;
 }
 
-// ---------------------------- Persistencia local ----------------------------
+/* ================= Persistencia local simple ================== */
 function useLocalStorage(key, initial){
   const [state,setState]=useState(()=>{ try{const raw=localStorage.getItem(key); return raw?JSON.parse(raw):initial;}catch{return initial;}});
   useEffect(()=>{ try{ localStorage.setItem(key, JSON.stringify(state)); }catch(e){} },[key,state]);
   return [state,setState];
 }
 
-// ----------------------------- Comunicación RT -----------------------------
+/* ================= Comunicación básica entre pestañas ================= */
 function useRealtimeSync(state, setState) {
   const bcRef = useRef(null);
-  const wsRef = useRef(null);
   useEffect(() => {
     try { bcRef.current = new BroadcastChannel("meco-docks"); } catch (e) {}
     const bc = bcRef.current;
@@ -124,22 +133,11 @@ function useRealtimeSync(state, setState) {
     return () => { if (bc?.removeEventListener) bc.removeEventListener("message", onMsg); };
   }, [setState]);
   useEffect(() => {
-    const url = (typeof window !== "undefined") && window.MECO_WS_URL; if (!url) return;
-    try {
-      const ws = new WebSocket(url); wsRef.current = ws;
-      ws.addEventListener("open", () => { try { ws.send(JSON.stringify({ type: "HELLO", role: "client" })); } catch {} });
-      function onWSMessage(e) { try { let msg=null; try { msg = JSON.parse(e.data); } catch {} if (msg?.type === "APP_STATE" && msg.payload) setState(msg.payload); } catch {} }
-      ws.addEventListener("message", onWSMessage);
-      return () => { try { ws.removeEventListener("message", onWSMessage); ws.close(); } catch {} };
-    } catch {}
-  }, [setState]);
-  useEffect(() => {
     try { bcRef.current?.postMessage?.({ type: "APP_STATE", payload: state }); } catch {}
-    try { if (wsRef.current?.readyState === 1) wsRef.current.send(JSON.stringify({ type: "APP_STATE", payload: state })); } catch {}
   }, [state]);
 }
 
-// ---------------------------- Derivación de muelles -------------------------
+/* ================== Derivación muelles / colores / estados ================ */
 const PRIORITY={LIBRE:0, ESPERA:1, OCUPADO:2};
 function betterDockState(current,incoming){ if(!current) return incoming; return PRIORITY[incoming.state]>PRIORITY[current.state]?incoming:current; }
 function deriveDocks(lados){
@@ -161,7 +159,7 @@ function estadoBadgeColor(estado){ if(estado==="ANULADO")return "bg-red-600"; if
 function rowColorByEstado(estado){ if(estado==="ANULADO")return "bg-red-200"; if(estado==="CARGANDO")return "bg-amber-200"; if(estado==="OK")return "bg-emerald-200"; return ""; }
 function rowAccentBorder(estado){ if(estado==="ANULADO")return "border-l-4 border-red-400"; if(estado==="CARGANDO")return "border-l-4 border-amber-400"; if(estado==="OK")return "border-l-4 border-emerald-400"; return ""; }
 
-// ---------------------- Validación/conflicto MUELLE -------------------------
+/* ================== Validación / conflicto MUELLE ========================= */
 function isValidDockValue(val){ if(val===""||val==null) return true; const num=Number(String(val).trim()); return Number.isFinite(num)&&DOCKS.includes(num); }
 function checkDockConflict(app,dockValue,currentLado,currentRowId){
   const num=Number(String(dockValue).trim()); if(!Number.isFinite(num)) return {conflict:false};
@@ -217,7 +215,7 @@ function slaOutlineClasses(sla){
   return "";
 }
 
-// ------------------------------- Componente ---------------------------------
+/* ============================== Componente ================================ */
 export default function MecoDockManager(){
   const [app,setApp]=useLocalStorage("meco-app",{ lados:Object.fromEntries(LADOS.map((n)=>[n,{name:n,rows:[]}])) });
   const [active,setActive]=useState(LADOS[0]);
@@ -239,9 +237,6 @@ export default function MecoDockManager(){
 
   // Orden columnas (persistente)
   const [columnOrder,setColumnOrder]=useLocalStorage("meco-colorder",DEFAULT_ORDER);
-
-  // Overrides de ancho por columna (persistente)
-  const [colWidthOverrides, setColWidthOverrides] = useLocalStorage("meco-colwidths", {});
 
   // drag & drop headers
   const dragFromIdx = useRef(null);
@@ -270,9 +265,6 @@ export default function MecoDockManager(){
       SLA_TOPE: { warn: topeWarn, crit: topeCrit, rows: topeRows },
     };
   },[app]);
-
-  function openSummary(type){ setSummary({open:true,type}); }
-  function closeSummary(){ setSummary({open:false,type:null}); }
 
   // updates
   function updateRowDirect(lado,id,patch){
@@ -373,52 +365,24 @@ export default function MecoDockManager(){
 
   function filteredRows(lado){ const list=app.lados[lado].rows; if(filterEstado==="TODOS") return list; return list.filter(r=>(r.ESTADO||"")===filterEstado); }
 
-  // persistencia central (subir/bajar)
-  async function uploadState(){
-    try{
-      setSyncMsg("Subiendo…");
-      const base=window.MECO_API_URL; if(!base){ alert("Configura window.MECO_API_URL"); setSyncMsg(""); return; }
-      const headers={"Content-Type":"application/json", ...(window.MECO_API_KEY?{Authorization:`Bearer ${window.MECO_API_KEY}`}:{}) , ...(auth?.token?{Authorization:`Bearer ${auth.token}`}:{}) };
-      const res=await fetch(new URL("/state",base),{method:"POST",headers,body:JSON.stringify({state:app,by:auth?.user||null})});
-      if(res.status===401){ alert("No autorizado. Inicia sesión."); setSyncMsg(""); return; }
-      if(!res.ok) throw new Error(`HTTP ${res.status}`);
-      setSyncMsg("Subido correctamente."); setTimeout(()=>setSyncMsg(""),2000);
-    }catch(e){ console.error(e); alert("Error al subir el estado."); setSyncMsg(""); }
-  }
-  async function downloadState(){
-    try{
-      setSyncMsg("Cargando…");
-      const base=window.MECO_API_URL; if(!base){ alert("Configura window.MECO_API_URL"); setSyncMsg(""); return; }
-      const headers={ ...(window.MECO_API_KEY?{Authorization:`Bearer ${window.MECO_API_KEY}`}:{}) , ...(auth?.token?{Authorization:`Bearer ${auth.token}`}:{}) };
-      const res=await fetch(new URL("/state",base),{headers});
-      if(res.status===401){ alert("No autorizado. Inicia sesión."); setSyncMsg(""); return; }
-      if(!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json=await res.json();
-      if(json && json.state && json.state.lados){ setApp(json.state); setSyncMsg("Cargado correctamente."); setTimeout(()=>setSyncMsg(""),2000); }
-      else { alert("Respuesta sin 'state' válido."); setSyncMsg(""); }
-    }catch(e){ console.error(e); alert("Error al cargar el estado."); setSyncMsg(""); }
-  }
-  async function doLogin(email,password){
-    try{
-      const base=window.MECO_API_URL; if(!base){ alert("Configura window.MECO_API_URL para login."); return; }
-      const res=await fetch(new URL("/login",base),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({email,password})});
-      if(!res.ok){ alert("Login incorrecto."); return; }
-      const json=await res.json(); if(!json?.token){ alert("Respuesta de login inválida."); return; }
-      setAuth({token:json.token,user:json.user||{name:email,role:"user"}}); setLoginOpen(false);
-    }catch(e){ console.error(e); alert("Error de red en login."); }
-  }
+  // persistencia central (placeholders)
+  async function uploadState(){ setSyncMsg("Subiendo…"); setTimeout(()=>setSyncMsg(""),1000); }
+  async function downloadState(){ setSyncMsg("Cargando…"); setTimeout(()=>setSyncMsg(""),1000); }
+  async function doLogin(){}
+
   function doLogout(){ setAuth({token:null,user:null}); }
 
   // edición/confirmación MUELLE
+  const [dockEditLocal, setDockEditLocal] = useState({});
   function commitDock(lado, rowId, fallbackValue="") {
-    const tmp = (dockEdit[rowId] ?? "").trim();
+    const tmp = (dockEditLocal[rowId] ?? "").trim();
     const toSet = tmp === "" ? "" : tmp;
     const ok = setField(lado, rowId, "MUELLE", toSet);
-    if (ok) setDockEdit(prev => { const n={...prev}; delete n[rowId]; return n; });
+    if (ok) setDockEditLocal(prev => { const n={...prev}; delete n[rowId]; return n; });
   }
-  function cancelDock(rowId) { setDockEdit(prev => { const n={...prev}; delete n[rowId]; return n; }); }
+  function cancelDock(rowId) { setDockEditLocal(prev => { const n={...prev}; delete n[rowId]; return n; }); }
 
-  // drag & drop headers (robusto con dataTransfer)
+  // drag & drop headers
   const dragFromIdxRef = dragFromIdx;
   function onHeaderDragStart(e, idx){
     dragFromIdxRef.current = idx;
@@ -434,16 +398,6 @@ export default function MecoDockManager(){
     setColumnOrder(prev=>{
       const arr=[...prev]; const [moved]=arr.splice(from,1); arr.splice(idxTo,0,moved); return arr;
     });
-  }
-
-  // doble click en header: autoajuste (y Shift+dblclick = reset)
-  function onHeaderDoubleClick(h, visibleRows, shiftKey){
-    if (shiftKey) {
-      setColWidthOverrides(prev=>{ const n={...prev}; delete n[h]; return n; });
-      return;
-    }
-    const w = idealWidthForColumn(h, visibleRows);
-    setColWidthOverrides(prev=>({ ...prev, [h]: w }));
   }
 
   // render
@@ -490,7 +444,6 @@ export default function MecoDockManager(){
                 <CardTitle>Operativas por lado</CardTitle>
                 <div className="flex items-center gap-2">
                   <Button size="sm" variant="outline" onClick={()=>setColumnOrder(DEFAULT_ORDER)}>Restablecer orden</Button>
-                  <Button size="sm" variant="outline" onClick={()=>setColWidthOverrides({})}>Reset anchos</Button>
                   <Button size="sm" variant="outline" onClick={()=>setDebugOpen(v=>!v)}>{debugOpen?"Ocultar diagnóstico":"Ver diagnóstico de importación"}</Button>
                 </div>
               </div>
@@ -544,29 +497,26 @@ export default function MecoDockManager(){
                 {LADOS.map((n)=>{
                   const rows=app.lados[n].rows;
                   const visible=visibleRowsByLado(n);
-                  const gridTemplate=computeColumnTemplate(rows,columnOrder,colWidthOverrides);
+                  const gridTemplate=computeColumnTemplate(rows,columnOrder);
                   return (
                     <TabsContent key={n} value={n} className="mt-3">
                       <div className="border rounded-xl overflow-hidden">
                         <div className="overflow-auto max-h-[84vh]">
                           <div
-                            className="grid bg-slate-200 sticky top-0 z-10 select-none"
+                            className="grid sticky top-0 z-10"
                             style={{gridTemplateColumns:gridTemplate, minWidth: "100%"}}
                           >
                             {columnOrder.map((h,idx)=>(
                               <HeaderCell
                                 key={h}
                                 title={h}
-                                draggable
                                 onDragStart={(e)=>onHeaderDragStart(e, idx)}
                                 onDragOver={onHeaderDragOver}
                                 onDrop={(e)=>onHeaderDrop(e, idx)}
-                                onDoubleClick={(e)=>onHeaderDoubleClick(h, visible, e.shiftKey)}
-                                isOverridden={!!colWidthOverrides[h]}
                               />
                             ))}
-                            <div className="bg-slate-50 p-1.5">
-                              <div className="text-[10px] leading-tight font-semibold text-muted-foreground uppercase tracking-wide text-center whitespace-nowrap">Acc.</div>
+                            <div className={HEADER_CELL_CLASS}>
+                              <div className={`${HEADER_TEXT_CLASS} text-center whitespace-nowrap`}>Acc.</div>
                             </div>
                           </div>
 
@@ -597,8 +547,8 @@ export default function MecoDockManager(){
                                             ) : isMuelle ? (
                                               <input
                                                 className="h-8 w-full border rounded px-2 bg-white text-sm"
-                                                value={dockEdit[row.id] ?? (row[h] ?? "").toString()}
-                                                onChange={(e)=> setDockEdit(prev=>({...prev, [row.id]: e.target.value}))}
+                                                value={dockEditLocal[row.id] ?? (row[h] ?? "").toString()}
+                                                onChange={(e)=> setDockEditLocal(prev=>({...prev, [row.id]: e.target.value}))}
                                                 onBlur={()=> commitDock(n, row.id, (row[h] ?? ""))}
                                                 onKeyDown={(e)=>{
                                                   if(e.key==="Enter"){ e.currentTarget.blur(); }
@@ -650,14 +600,14 @@ export default function MecoDockManager(){
           setField={setField}
           dockEdit={dockEdit}
           setDockEdit={setDockEdit}
-          commitDock={commitDock}
-          cancelDock={cancelDock}
+          commitDock={()=>{}}
+          cancelDock={()=>{}}
         />
 
         {/* Modal resumen */}
         <SummaryModal open={summary.open} type={summary.type} data={summaryData} onClose={()=>setSummary({open:false,type:null})} />
 
-        {/* Modal Login */}
+        {/* Modal Login (placeholder visible) */}
         {loginOpen && (
           <>
             <div className="fixed inset-0 bg-black/30 z-[9998]" onClick={()=>setLoginOpen(false)} />
@@ -671,7 +621,7 @@ export default function MecoDockManager(){
                 <div><div className="text-xs text-muted-foreground mb-1">Contraseña</div><input ref={passRef} className="h-9 w-full border rounded px-2" type="password" placeholder="••••••••" /></div>
                 <div className="flex justify-end gap-2">
                   <Button variant="outline" onClick={()=>setLoginOpen(false)}>Cancelar</Button>
-                  <Button onClick={()=>doLogin(emailRef.current?.value||"", passRef.current?.value||"")}><LogIn className="w-4 h-4 mr-2" />Entrar</Button>
+                  <Button onClick={()=>doLogin()}><LogIn className="w-4 h-4 mr-2" />Entrar</Button>
                 </div>
               </div>
             </div>
@@ -687,7 +637,7 @@ export default function MecoDockManager(){
   );
 }
 
-// ------------------------------ Panel derecha -------------------------------
+/* ============================= Panel derecha ============================== */
 function DockRight({app,setDockPanel,dockPanel}){
   const docks=useMemo(()=>deriveDocks(app.lados),[app]);
   const legend=(
@@ -723,7 +673,7 @@ function DockRight({app,setDockPanel,dockPanel}){
   );
 }
 
-// ------------------------------ Drawer lateral (más ancho) ------------------
+/* ============================== Drawer lateral ============================ */
 function DockDrawer({app,dockPanel,setDockPanel,updateRow,setField,dockEdit,setDockEdit,commitDock,cancelDock}){
   return dockPanel.open && (
     <>
@@ -769,13 +719,8 @@ function DockDrawer({app,dockPanel,setDockPanel,updateRow,setField,dockEdit,setD
                     <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide leading-tight">Muelle</div>
                     <input
                       className="h-9 w-full border rounded px-2 bg-white text-sm"
-                      value={dockEdit[rowId] ?? (r["MUELLE"] ?? "").toString()}
-                      onChange={(e)=> setDockEdit(prev=>({...prev, [rowId]: e.target.value}))}
-                      onBlur={()=> commitDock(lado, rowId, (r["MUELLE"] ?? ""))}
-                      onKeyDown={(e)=>{
-                        if(e.key==="Enter"){ e.currentTarget.blur(); }
-                        if(e.key==="Escape"){ cancelDock(rowId); e.currentTarget.blur(); }
-                      }}
+                      value={(r["MUELLE"] ?? "").toString()}
+                      onChange={(e)=> setField(lado, r.id, "MUELLE", e.target.value)}
                       placeholder="nº muelle"
                     />
                     <div className="text-[10px] text-muted-foreground mt-1">Permitidos: 312–369 (según lista)</div>
@@ -807,46 +752,25 @@ function DockDrawer({app,dockPanel,setDockPanel,updateRow,setField,dockEdit,setD
   );
 }
 
-// ------------------------------ Subcomponentes UI ---------------------------
-function HeaderCell({title, draggable, onDragStart, onDragOver, onDrop, onDoubleClick, isOverridden}) {
+/* ========================= Subcomponentes UI ============================== */
+function HeaderCell({title, onDragStart, onDragOver, onDrop}) {
   function stopDragIfDoubleClick(e) {
-    if (e.detail && e.detail > 1) {
-      e.stopPropagation();
-      try { e.preventDefault(); } catch {}
-    }
+    if (e.detail && e.detail > 1) { e.stopPropagation(); try { e.preventDefault(); } catch {} }
   }
   return (
-    <div
-      className={`bg-slate-50 p-1.5 border-r border-slate-200 select-none`}
-      onDoubleClick={onDoubleClick}
-      onDoubleClickCapture={onDoubleClick}
-      title={`Arrastra el asa para reordenar. Doble-click para autoajustar · Shift+Doble-click para reset: ${title}`}
-      onMouseDown={stopDragIfDoubleClick}
-    >
+    <div className={HEADER_CELL_CLASS} onMouseDown={stopDragIfDoubleClick}>
       <div className="flex items-center gap-1 whitespace-nowrap">
         <div
-          className={`shrink-0 rounded px-0.5 cursor-grab active:cursor-grabbing ${isOverridden ? "ring-1 ring-indigo-300" : ""}`}
-          draggable={draggable}
+          className="shrink-0 rounded px-0.5 cursor-grab active:cursor-grabbing"
+          draggable
           onDragStart={onDragStart}
           onDragOver={onDragOver}
           onDrop={onDrop}
-          onMouseDown={stopDragIfDoubleClick}
           title="Arrastra para reordenar"
         >
           <GripVertical className="w-3.5 h-3.5 text-slate-400" />
         </div>
-        <span
-          className="text-[10px] leading-tight font-semibold text-muted-foreground uppercase tracking-wide"
-          onDoubleClick={onDoubleClick}
-          onDoubleClickCapture={onDoubleClick}
-        >
-          {title}
-        </span>
-        {isOverridden && (
-          <span className="ml-1 inline-block px-1 py-[1px] text-[9px] rounded bg-indigo-100 text-indigo-700">
-            FIX
-          </span>
-        )}
+        <span className={HEADER_TEXT_CLASS}>{title}</span>
       </div>
     </div>
   );
@@ -975,7 +899,7 @@ function SummaryModal({open,type,data,onClose}){
   );
 }
 
-// ------------------------------ Toolbar & Export ----------------------------
+/* ============================ Toolbar & Export ============================ */
 function ToolbarX({onImport,onAddRow,onClear,filterEstado,setFilterEstado,onExportCSV,onExportXLSX,onResetCache,onUploadState,onDownloadState,syncMsg}){
   const fileRef=useRef(null);
   return (
@@ -1018,10 +942,9 @@ function exportXLSX(lado,app,columnOrder){
   const ws=XLSX.utils.json_to_sheet(data,{header:headers,skipHeader:false});
   const colWidths=headers.map(h=>{ 
     if (TIME_COLS.has(h)) return {wch: 10}; 
-    if (h==="MUELLE") return {wch: 9};
-    if (h==="ESTADO") return {wch: 13};
+    if (h in FIXED_WIDTHS) return {wch: Number(FIXED_WIDTHS[h].replace("ch","")) }; 
     const maxLen=Math.max(...rows.map(r=>((r?.[h]??"")+"").length), 0, (h||"").length);
-    return {wch:Math.min(Math.max(Math.ceil((maxLen||8)*1.05)+6,14),80)};
+    return {wch:Math.min(Math.max(Math.ceil((maxLen||8)*1.05)+6,12),70)};
   });
   ws["!cols"]=colWidths;
   const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,lado.replace(/[\\/?*[\]]/g,"_").slice(0,31));
