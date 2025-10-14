@@ -1,11 +1,11 @@
-// MecoDockManager.jsx — SALIDA TOPE 100px, Llegada/Salida REAL 100px, sin login ni subir/cargar red
+// MecoDockManager.jsx — Sin Login ni Subir/Cargar red · Botones operativos · SALIDA REAL/TOPE 100px · Edición MUELLE en blur
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { Download, FileUp, Plus, Trash2, X, AlertTriangle, GripVertical } from "lucide-react";
+import { Download, FileUp, Plus, Trash2, X, AlertTriangle, GripVertical, RefreshCw } from "lucide-react";
 import * as XLSX from "xlsx";
 import { motion } from "framer-motion";
 
@@ -38,7 +38,7 @@ const DEFAULT_ORDER = [
 ];
 const EXPECTED_KEYS = [...new Set([...BASE_HEADERS, ...EXTRA_HEADERS])];
 
-// ==== utilidades ====
+/* ==================== Utils ==================== */
 function norm(s) {
   return (s ?? "")
     .toString().replace(/\r?\n+/g, " ").replace(/\s{2,}/g, " ")
@@ -113,7 +113,7 @@ const ACTIONS_PX = 44; // columna Acciones
 
 function px(n){ return `${Math.max(40, Math.floor(n))}px`; } // mínimo 40px
 function computeColumnTemplate(_rows, order){
-  const widths = (order||[]).map((h)=> (h in FIXED_PX) ? px(FIXED_PX[h]) : "minmax(120px,1fr)");
+  const widths = (order||[]).map((h)=> (h in FIXED_PX) ? px(FIXED_PX[h]) : "minmax(120px,1fr)";
   return `${widths.join(" ")} ${px(ACTIONS_PX)}`;
 }
 
@@ -231,6 +231,9 @@ export default function MecoDockManager(){
   // Orden columnas (persistente)
   const [columnOrder,setColumnOrder]=useLocalStorage("meco-colorder",DEFAULT_ORDER);
 
+  // Estado para el modal de resumen (lo que rompía antes)
+  const [summary,setSummary]=useState({open:false,type:null});
+
   // refs para edición de muelle (guardar valor previo y validar en blur)
   const muPrevRef = useRef({}); // { [rowId]: prevValue }
 
@@ -281,7 +284,7 @@ export default function MecoDockManager(){
     };
   },[app]);
 
-  // helpers
+  /* ====== Helpers CRUD ====== */
   function updateRowDirect(lado,id,patch){
     setApp(prev=>{
       const prevRows = prev?.lados?.[lado]?.rows || [];
@@ -293,7 +296,6 @@ export default function MecoDockManager(){
     updateRowDirect(lado,id,{[field]:value});
     return true;
   }
-  // commit para MUELLE en blur
   function commitDockValue(lado, rowId, newValue){
     const prevValue = muPrevRef.current[rowId] ?? "";
     const value = (newValue ?? "").toString().trim();
@@ -339,7 +341,7 @@ export default function MecoDockManager(){
     setApp(prev=>({...prev, lados:{...prev.lados, [lado]:{...(prev.lados?.[lado]||{name:lado}), rows:[]}}}));
   }
 
-  // ----------------- IMPORT Excel -----------------
+  /* ====== Import/Export ====== */
   function importExcel(file,lado){
     const reader=new FileReader();
     reader.onload=(e)=>{
@@ -410,7 +412,7 @@ export default function MecoDockManager(){
     return list.filter(r=>(r?.ESTADO||"")===filterEstado);
   }
 
-  // render
+  /* ====== Render ====== */
   const visibleRowsByLado = (lado)=>filteredRows(lado);
 
   return (
@@ -424,6 +426,7 @@ export default function MecoDockManager(){
           </div>
         </header>
 
+        {/* Avisos SLA arriba */}
         <AlertStrip
           waitCrit={summaryData.SLA_WAIT.crit}
           waitWarn={summaryData.SLA_WAIT.warn}
@@ -432,6 +435,7 @@ export default function MecoDockManager(){
           onOpen={(type)=>setSummary({open:true,type})}
         />
 
+        {/* Resumen superior */}
         <SummaryBar data={summaryData} onOpen={(type)=>setSummary({open:true,type})} />
 
         <div className="grid gap-3 mt-3" style={{ gridTemplateColumns: "minmax(0,1fr) 290px" }}>
@@ -440,7 +444,9 @@ export default function MecoDockManager(){
               <div className="flex items-center justify-between">
                 <CardTitle>Operativas por lado</CardTitle>
                 <div className="flex items-center gap-2">
-                  <Button size="sm" variant="outline" onClick={()=>setColumnOrder(DEFAULT_ORDER)}>Restablecer orden</Button>
+                  <Button size="sm" variant="outline" onClick={()=>setColumnOrder(DEFAULT_ORDER)}>
+                    <RefreshCw className="w-4 h-4 mr-2" /> Restablecer orden
+                  </Button>
                 </div>
               </div>
             </CardHeader>
@@ -459,7 +465,7 @@ export default function MecoDockManager(){
                     setFilterEstado={setFilterEstado}
                     onExportCSV={()=>exportCSV(active,app,columnOrder)}
                     onExportXLSX={()=>exportXLSX(active,app,columnOrder)}
-                    onResetCache={()=>{ try{localStorage.removeItem("meco-app");}catch(e){} window.location.reload(); }}
+                    onResetCache={()=>{ try{localStorage.removeItem("meco-app"); localStorage.removeItem("meco-colorder");}catch(e){} window.location.reload(); }}
                   />
                 </div>
 
@@ -471,6 +477,7 @@ export default function MecoDockManager(){
                     <TabsContent key={n} value={n} className="mt-3">
                       <div className="border rounded-xl overflow-hidden">
                         <div className="overflow-auto max-h-[84vh]">
+                          {/* Header de la tabla */}
                           <div
                             className="grid sticky top-0 z-10"
                             style={{gridTemplateColumns:gridTemplate, minWidth: "100%"}}
@@ -489,6 +496,7 @@ export default function MecoDockManager(){
                             </div>
                           </div>
 
+                          {/* Filas */}
                           <div>
                             {visible.map((row)=>{
                               const estado=(row?.ESTADO||"").toString();
@@ -517,7 +525,7 @@ export default function MecoDockManager(){
                                               <input
                                                 className="h-8 w-full border rounded px-2 bg-white text-sm"
                                                 value={(row?.[h] ?? "").toString()}
-                                                onFocus={(e)=>{ muPrevRef.current[row.id] = (row?.[h] ?? "").toString(); }}
+                                                onFocus={()=>{ muPrevRef.current[row.id] = (row?.[h] ?? "").toString(); }}
                                                 onChange={(e)=> updateRowDirect(n, row.id, { MUELLE: e.target.value })}
                                                 onBlur={(e)=> commitDockValue(n, row.id, e.target.value)}
                                                 placeholder="nº muelle"
@@ -553,7 +561,7 @@ export default function MecoDockManager(){
             </CardContent>
           </Card>
 
-          {/* Derecha */}
+          {/* Derecha · panel muelles */}
           <DockRight app={app} setDockPanel={setDockPanel} dockPanel={dockPanel} />
         </div>
 
@@ -568,8 +576,8 @@ export default function MecoDockManager(){
           muPrevRef={muPrevRef}
         />
 
-        {/* Modal resumen */}
-        <SummaryModal open={summaryData.open} type={summaryData.type} data={summaryData} onClose={()=>{}} />
+        {/* Modal resumen (restaurado al estado correcto) */}
+        <SummaryModal open={summary.open} type={summary.type} data={summaryData} onClose={()=>setSummary({open:false,type:null})} />
 
         <footer className="mt-4 text-xs text-muted-foreground flex items-center justify-between">
           <div>Estados camión: <Badge className="bg-emerald-600">OK</Badge> · <Badge className="bg-amber-500">CARGANDO</Badge> · <Badge className="bg-red-600">ANULADO</Badge></div>
@@ -853,16 +861,39 @@ function ToolbarX({onImport,onAddRow,onClear,filterEstado,setFilterEstado,onExpo
   const fileRef=useRef(null);
   return (
     <div className="flex items-center gap-2 flex-wrap">
-      <input ref={fileRef} type="file" accept=".xlsx,.xls" className="hidden" onChange={(e)=>{ const f=e.target.files&&e.target.files[0]; if(f) onImport(f); if(fileRef.current) fileRef.current.value=""; }}/>
-      <Button size="sm" variant="secondary" onClick={()=>fileRef.current && fileRef.current.click()}><FileUp className="mr-2 h-4 w-4" /> Importar Excel</Button>
-      <Button size="sm" onClick={onExportCSV}><Download className="mr-2 h-4 w-4" /> Exportar CSV</Button>
-      <Button size="sm" onClick={onExportXLSX} variant="outline"><Download className="mr-2 h-4 w-4" /> Exportar Excel (.xlsx)</Button>
-      <Button size="sm" variant="outline" onClick={onAddRow}><Plus className="mr-2 h-4 w-4" /> Nueva fila</Button>
-      <Button size="sm" variant="destructive" onClick={onClear}><Trash2 className="mr-2 h-4 w-4" /> Vaciar lado</Button>
-      <Button size="sm" variant="secondary" onClick={onResetCache}>Limpiar caché local</Button>
+      <input
+        ref={fileRef}
+        type="file"
+        accept=".xlsx,.xls"
+        className="hidden"
+        onChange={(e)=>{ const f=e.target.files&&e.target.files[0]; if(f) onImport(f); if(fileRef.current) fileRef.current.value=""; }}
+      />
+      <Button size="sm" variant="secondary" onClick={()=>fileRef.current && fileRef.current.click()}>
+        <FileUp className="mr-2 h-4 w-4" /> Importar Excel
+      </Button>
+      <Button size="sm" onClick={onExportCSV}>
+        <Download className="mr-2 h-4 w-4" /> Exportar CSV
+      </Button>
+      <Button size="sm" onClick={onExportXLSX} variant="outline">
+        <Download className="mr-2 h-4 w-4" /> Exportar Excel (.xlsx)
+      </Button>
+      <Button size="sm" variant="outline" onClick={onAddRow}>
+        <Plus className="mr-2 h-4 w-4" /> Nueva fila
+      </Button>
+      <Button size="sm" variant="destructive" onClick={onClear}>
+        <Trash2 className="mr-2 h-4 w-4" /> Vaciar lado
+      </Button>
+      <Button size="sm" variant="secondary" onClick={onResetCache}>
+        Limpiar caché local
+      </Button>
+
       <div className="ml-auto flex items-center gap-2">
         <span className="text-sm text-muted-foreground">Filtrar estado</span>
-        <select className="h-8 w-[160px] border rounded px-2 bg-white text-sm" value={filterEstado==="TODOS"?"":filterEstado} onChange={(e)=>setFilterEstado(e.target.value||"TODOS")}>
+        <select
+          className="h-8 w-[160px] border rounded px-2 bg-white text-sm"
+          value={filterEstado==="TODOS"?"":filterEstado}
+          onChange={(e)=>setFilterEstado(e.target.value||"TODOS")}
+        >
           <option value="">Todos</option>
           {CAMION_ESTADOS.map(opt=><option key={opt} value={opt}>{opt}</option>)}
         </select>
@@ -886,7 +917,7 @@ function exportXLSX(lado,app,columnOrder){
   const ws=XLSX.utils.json_to_sheet(data,{header:headers,skipHeader:false});
   const colWidths=headers.map(h=>{
     if (h in FIXED_PX) return { wpx: FIXED_PX[h] };
-    if (TIME_COLS.has(h)) return { wpx: 140 };
+    if (TIME_COLS.has(h)) return { wpx: 140 }; // solo aspecto en Excel
     return { wpx: 140 };
   });
   ws["!cols"]=colWidths;
