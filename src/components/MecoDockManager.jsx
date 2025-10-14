@@ -8,11 +8,11 @@ import { Download, FileUp, Plus, Trash2, Upload, RefreshCw, LogIn, LogOut, X, Al
 import * as XLSX from "xlsx";
 import { motion } from "framer-motion";
 
-/* ========================= PARÁMETROS SLA AJUSTABLES ====================== */
+/* ========================= PARÁMETROS SLA ====================== */
 const SLA_WAIT_WARN_MIN = 15;
 const SLA_WAIT_CRIT_MIN = 30;
 const SLA_TOPE_WARN_MIN = 15;
-/* ========================================================================== */
+/* ============================================================== */
 
 const DOCKS = [
   312,313,314,315,316,317,318,319,320,321,322,323,324,325,326,327,328,329,330,331,332,333,334,335,336,337,
@@ -37,7 +37,7 @@ const DEFAULT_ORDER = [
 ];
 const EXPECTED_KEYS = [...new Set([...BASE_HEADERS, ...EXTRA_HEADERS])];
 
-// ----- utilidades -----
+// ==== utilidades ====
 function norm(s) {
   return (s ?? "")
     .toString().replace(/\r?\n+/g, " ").replace(/\s{2,}/g, " ")
@@ -75,54 +75,48 @@ function parseFlexibleToDate(s){
 }
 function minutesDiff(a,b){ return Math.round((a.getTime()-b.getTime())/60000); }
 
-/* ==================== Cálculo de anchos ====================== */
-/* Alturas/estilo de encabezado MÁS PEQUEÑO (≈ la mitad) */
-const HEADER_CELL_CLASS = "bg-slate-50 p-0.5 border-r border-slate-200 select-none";
+/* ==================== Encabezados compactos ==================== */
+const HEADER_CELL_CLASS = "bg-slate-50 px-1 py-0.5 border-r border-slate-200 select-none";
 const HEADER_TEXT_CLASS = "text-[9px] leading-none font-semibold text-muted-foreground uppercase tracking-wide";
 
-/* Anchos fijos/forzados */
+/* ==================== Anchos forzados en PX ==================== */
 const TIME_COLS = new Set(["LLEGADA","LLEGADA REAL","SALIDA","SALIDA REAL","SALIDA TOPE"]); // HH:mm
-const TIME_WIDTH = "10ch";
-const ACTIONS_WIDTH = "3.0rem";
+const PX_TIME = 80;      // 80px para horas
+const PX_MUELLE = 90;    // MUELLE
+const PX_ESTADO = 130;   // ESTADO
+// Reducciones que pediste:
+const PX_MATRICULA = 140;
+const PX_DESTINO = 220;
+const PX_PRECINTO = 120;
+const PX_OBSERVACIONES = 260;
 
-/* Mantengo MUELLE y ESTADO fijos y ADEMÁS fuerzo estrechamiento de las que indicaste */
-const FIXED_WIDTHS = {
-  MUELLE: "9ch",
-  ESTADO: "13ch",
-  /* Reducciones solicitadas */
-  MATRICULA: "16ch",      // más estrecha
-  DESTINO: "22ch",        // más estrecha
-  PRECINTO: "12ch",       // más estrecha
-  OBSERVACIONES: "26ch",  // un poco más estrecha
+const FIXED_PX = {
+  "LLEGADA": PX_TIME, "LLEGADA REAL": PX_TIME, "SALIDA": PX_TIME, "SALIDA REAL": PX_TIME, "SALIDA TOPE": PX_TIME,
+  "MUELLE": PX_MUELLE, "ESTADO": PX_ESTADO,
+  "MATRICULA": PX_MATRICULA, "DESTINO": PX_DESTINO, "PRECINTO": PX_PRECINTO, "OBSERVACIONES": PX_OBSERVACIONES,
 };
+const ACTIONS_PX = 44; // columna Acciones
 
-function widthFromLen(len){
-  const ch = Math.min(Math.max(len * 1.05 + 6, 12), 70); // base algo más compacta
-  return `${Math.round(ch)}ch`;
-}
-
-function idealWidthForColumn(h, rows){
-  if (TIME_COLS.has(h)) return TIME_WIDTH;
-  if (h in FIXED_WIDTHS) return FIXED_WIDTHS[h]; // << fuerza las que pediste
-  const headerLen = (h || "").length;
-  const dataMax = rows && rows.length ? Math.max(...rows.map(r => ((r?.[h] ?? "") + "").length), 0) : 0;
-  const pad = 8; // menos pad para compactar
-  return widthFromLen(Math.max(dataMax, headerLen) + pad);
-}
+function px(n){ return `${Math.max(40, Math.floor(n))}px`; } // mínimo 40px para no romper inputs
 
 function computeColumnTemplate(rows, order){
-  const widths = order.map((h)=> idealWidthForColumn(h, rows));
-  return `${widths.join(" ")} ${ACTIONS_WIDTH}`;
+  // Fijamos en píxeles las columnas específicas y dejamos el resto en auto (1fr mínimo 120px)
+  const widths = order.map((h)=>{
+    if (h in FIXED_PX) return px(FIXED_PX[h]);
+    // resto: compactas pero fluidas
+    return "minmax(120px,1fr)";
+  });
+  return `${widths.join(" ")} ${px(ACTIONS_PX)}`;
 }
 
-/* ================= Persistencia local simple ================== */
+/* ================= Persistencia local ================= */
 function useLocalStorage(key, initial){
   const [state,setState]=useState(()=>{ try{const raw=localStorage.getItem(key); return raw?JSON.parse(raw):initial;}catch{return initial;}});
   useEffect(()=>{ try{ localStorage.setItem(key, JSON.stringify(state)); }catch(e){} },[key,state]);
   return [state,setState];
 }
 
-/* ================= Comunicación básica entre pestañas ================= */
+/* ================= Comunicación entre pestañas ================= */
 function useRealtimeSync(state, setState) {
   const bcRef = useRef(null);
   useEffect(() => {
@@ -372,16 +366,6 @@ export default function MecoDockManager(){
 
   function doLogout(){ setAuth({token:null,user:null}); }
 
-  // edición/confirmación MUELLE
-  const [dockEditLocal, setDockEditLocal] = useState({});
-  function commitDock(lado, rowId, fallbackValue="") {
-    const tmp = (dockEditLocal[rowId] ?? "").trim();
-    const toSet = tmp === "" ? "" : tmp;
-    const ok = setField(lado, rowId, "MUELLE", toSet);
-    if (ok) setDockEditLocal(prev => { const n={...prev}; delete n[rowId]; return n; });
-  }
-  function cancelDock(rowId) { setDockEditLocal(prev => { const n={...prev}; delete n[rowId]; return n; }); }
-
   // drag & drop headers
   const dragFromIdxRef = dragFromIdx;
   function onHeaderDragStart(e, idx){
@@ -547,13 +531,8 @@ export default function MecoDockManager(){
                                             ) : isMuelle ? (
                                               <input
                                                 className="h-8 w-full border rounded px-2 bg-white text-sm"
-                                                value={dockEditLocal[row.id] ?? (row[h] ?? "").toString()}
-                                                onChange={(e)=> setDockEditLocal(prev=>({...prev, [row.id]: e.target.value}))}
-                                                onBlur={()=> commitDock(n, row.id, (row[h] ?? ""))}
-                                                onKeyDown={(e)=>{
-                                                  if(e.key==="Enter"){ e.currentTarget.blur(); }
-                                                  if(e.key==="Escape"){ cancelDock(row.id); e.currentTarget.blur(); }
-                                                }}
+                                                value={(row[h] ?? "").toString()}
+                                                onChange={(e)=> setField(n, row.id, "MUELLE", e.target.value)}
                                                 placeholder="nº muelle"
                                               />
                                             ) : (
@@ -621,7 +600,7 @@ export default function MecoDockManager(){
                 <div><div className="text-xs text-muted-foreground mb-1">Contraseña</div><input ref={passRef} className="h-9 w-full border rounded px-2" type="password" placeholder="••••••••" /></div>
                 <div className="flex justify-end gap-2">
                   <Button variant="outline" onClick={()=>setLoginOpen(false)}>Cancelar</Button>
-                  <Button onClick={()=>doLogin()}><LogIn className="w-4 h-4 mr-2" />Entrar</Button>
+                  <Button onClick={()=>{}}><LogIn className="w-4 h-4 mr-2" />Entrar</Button>
                 </div>
               </div>
             </div>
@@ -940,11 +919,10 @@ function exportXLSX(lado,app,columnOrder){
   const headers=columnOrder, rows=app.lados[lado].rows||[];
   const data=rows.map(r=>{ const o={}; headers.forEach(h=>{o[h]=r[h]??""}); return o; });
   const ws=XLSX.utils.json_to_sheet(data,{header:headers,skipHeader:false});
-  const colWidths=headers.map(h=>{ 
-    if (TIME_COLS.has(h)) return {wch: 10}; 
-    if (h in FIXED_WIDTHS) return {wch: Number(FIXED_WIDTHS[h].replace("ch","")) }; 
-    const maxLen=Math.max(...rows.map(r=>((r?.[h]??"")+"").length), 0, (h||"").length);
-    return {wch:Math.min(Math.max(Math.ceil((maxLen||8)*1.05)+6,12),70)};
+  const colWidths=headers.map(h=>{
+    if (h in FIXED_PX) return { wpx: FIXED_PX[h] };
+    if (TIME_COLS.has(h)) return { wpx: PX_TIME };
+    return { wpx: 140 }; // por defecto razonable para resto
   });
   ws["!cols"]=colWidths;
   const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,lado.replace(/[\\/?*[\]]/g,"_").slice(0,31));
