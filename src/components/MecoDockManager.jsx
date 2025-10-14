@@ -111,9 +111,12 @@ const FIXED_PX = {
 };
 const ACTIONS_PX = 44; // columna Acciones
 
-function px(n){ return `${Math.max(40, Math.floor(n))}px`; } // mínimo 40px
+// --- util ancho columnas ---
+function px(n){
+  return `${Math.max(40, Math.floor(n))}px`; // mínimo 40px
+}
 function computeColumnTemplate(_rows, order){
-  const widths = (order||[]).map((h)=> (h in FIXED_PX) ? px(FIXED_PX[h]) : "minmax(120px,1fr)";
+  const widths = (order || []).map((h) => ((h in FIXED_PX) ? px(FIXED_PX[h]) : "minmax(120px,1fr)"));
   return `${widths.join(" ")} ${px(ACTIONS_PX)}`;
 }
 
@@ -231,7 +234,7 @@ export default function MecoDockManager(){
   // Orden columnas (persistente)
   const [columnOrder,setColumnOrder]=useLocalStorage("meco-colorder",DEFAULT_ORDER);
 
-  // Estado para el modal de resumen (lo que rompía antes)
+  // Estado para el modal de resumen
   const [summary,setSummary]=useState({open:false,type:null});
 
   // refs para edición de muelle (guardar valor previo y validar en blur)
@@ -576,7 +579,7 @@ export default function MecoDockManager(){
           muPrevRef={muPrevRef}
         />
 
-        {/* Modal resumen (restaurado al estado correcto) */}
+        {/* Modal resumen */}
         <SummaryModal open={summary.open} type={summary.type} data={summaryData} onClose={()=>setSummary({open:false,type:null})} />
 
         <footer className="mt-4 text-xs text-muted-foreground flex items-center justify-between">
