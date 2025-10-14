@@ -1,3 +1,4 @@
+// MecoDockManager.jsx — Anchos fijos + Vaciar lado blindado + TRANSPORTISTA reducido
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -84,26 +85,35 @@ const TIME_COLS = new Set(["LLEGADA","LLEGADA REAL","SALIDA","SALIDA REAL","SALI
 const PX_TIME = 80;      // 80px para horas
 const PX_MUELLE = 90;    // MUELLE
 const PX_ESTADO = 130;   // ESTADO
-// Reducciones que pediste:
-const PX_MATRICULA = 140;
-const PX_DESTINO = 220;
+
+// Ajustes pedidos
+const PX_TRANSPORTISTA = 180; // NUEVO: reducimos Transportista
+const PX_MATRICULA = 120;
+const PX_DESTINO = 300;
 const PX_PRECINTO = 120;
 const PX_OBSERVACIONES = 260;
 
 const FIXED_PX = {
-  "LLEGADA": PX_TIME, "LLEGADA REAL": PX_TIME, "SALIDA": PX_TIME, "SALIDA REAL": PX_TIME, "SALIDA TOPE": PX_TIME,
-  "MUELLE": PX_MUELLE, "ESTADO": PX_ESTADO,
-  "MATRICULA": PX_MATRICULA, "DESTINO": PX_DESTINO, "PRECINTO": PX_PRECINTO, "OBSERVACIONES": PX_OBSERVACIONES,
+  "TRANSPORTISTA": PX_TRANSPORTISTA,
+  "MATRICULA": PX_MATRICULA,
+  "DESTINO": PX_DESTINO,
+  "PRECINTO": PX_PRECINTO,
+  "OBSERVACIONES": PX_OBSERVACIONES,
+  "MUELLE": PX_MUELLE,
+  "ESTADO": PX_ESTADO,
+  "LLEGADA": PX_TIME,
+  "LLEGADA REAL": PX_TIME,
+  "SALIDA": PX_TIME,
+  "SALIDA REAL": PX_TIME,
+  "SALIDA TOPE": PX_TIME,
 };
 const ACTIONS_PX = 44; // columna Acciones
 
-function px(n){ return `${Math.max(40, Math.floor(n))}px`; } // mínimo 40px para no romper inputs
+function px(n){ return `${Math.max(40, Math.floor(n))}px`; } // mínimo 40px
 
-function computeColumnTemplate(rows, order){
-  // Fijamos en píxeles las columnas específicas y dejamos el resto en auto (1fr mínimo 120px)
-  const widths = order.map((h)=>{
+function computeColumnTemplate(_rows, order){
+  const widths = (order||[]).map((h)=>{
     if (h in FIXED_PX) return px(FIXED_PX[h]);
-    // resto: compactas pero fluidas
     return "minmax(120px,1fr)";
   });
   return `${widths.join(" ")} ${px(ACTIONS_PX)}`;
@@ -136,10 +146,12 @@ const PRIORITY={LIBRE:0, ESPERA:1, OCUPADO:2};
 function betterDockState(current,incoming){ if(!current) return incoming; return PRIORITY[incoming.state]>PRIORITY[current.state]?incoming:current; }
 function deriveDocks(lados){
   const dockMap=new Map(); DOCKS.forEach((d)=>dockMap.set(d,{state:"LIBRE"}));
-  Object.keys(lados).forEach((ladoName)=>{
-    (lados[ladoName]?.rows||[]).forEach((row)=>{
-      const muNum=Number(String(row.MUELLE??"").trim()); if(!Number.isFinite(muNum)||!DOCKS.includes(muNum)) return;
-      const llegadaReal=(row["LLEGADA REAL"]||"").trim(); const salidaReal=(row["SALIDA REAL"]||"").trim();
+  Object.keys(lados||{}).forEach((ladoName)=>{
+    ((lados?.[ladoName]?.rows)||[]).forEach((row)=>{
+      const muNum=Number(String(row?.MUELLE??"").trim());
+      if(!Number.isFinite(muNum)||!DOCKS.includes(muNum)) return;
+      const llegadaReal=(row?.["LLEGADA REAL"]||"").trim();
+      const salidaReal=(row?.["SALIDA REAL"]||"").trim();
       let state="ESPERA"; if(llegadaReal) state="OCUPADO"; if(salidaReal) state="LIBRE";
       const incoming=state==="LIBRE"?{state:"LIBRE"}:{state,row,lado:ladoName};
       const prev=dockMap.get(muNum); const next=state==="LIBRE"?(prev||{state:"LIBRE"}):betterDockState(prev,incoming);
@@ -157,11 +169,11 @@ function rowAccentBorder(estado){ if(estado==="ANULADO")return "border-l-4 borde
 function isValidDockValue(val){ if(val===""||val==null) return true; const num=Number(String(val).trim()); return Number.isFinite(num)&&DOCKS.includes(num); }
 function checkDockConflict(app,dockValue,currentLado,currentRowId){
   const num=Number(String(dockValue).trim()); if(!Number.isFinite(num)) return {conflict:false};
-  for(const ladoName of Object.keys(app.lados)){
-    for(const row of app.lados[ladoName].rows){
+  for(const ladoName of Object.keys(app?.lados||{})){
+    for(const row of (app?.lados?.[ladoName]?.rows||[])){
       if(row.id===currentRowId && ladoName===currentLado) continue;
-      const mu=Number(String(row.MUELLE??"").trim()); if(mu!==num) continue;
-      const llegadaReal=(row["LLEGADA REAL"]||"").trim(); const salidaReal=(row["SALIDA REAL"]||"").trim();
+      const mu=Number(String(row?.MUELLE??"").trim()); if(mu!==num) continue;
+      const llegadaReal=(row?.["LLEGADA REAL"]||"").trim(); const salidaReal=(row?.["SALIDA REAL"]||"").trim();
       let state="ESPERA"; if(llegadaReal) state="OCUPADO"; if(salidaReal) state="LIBRE";
       if(state!=="LIBRE") return {conflict:true, info:{lado:ladoName,row,estado:state}};
     }
@@ -179,16 +191,16 @@ function withDockAssignStamp(prevRow,nextRow){
 function getSLA(row){
   const now=new Date();
   let wait={level:null,minutes:0};
-  const muelle=(row.MUELLE||"").toString().trim();
-  const llegadaReal=(row["LLEGADA REAL"]||"").toString().trim();
+  const muelle=(row?.MUELLE||"").toString().trim();
+  const llegadaReal=(row?.["LLEGADA REAL"]||"").toString().trim();
   if(muelle && !llegadaReal){
-    let ref=row._ASIG_TS?new Date(row._ASIG_TS):null;
-    if(!ref && row.LLEGADA){ const d=parseFlexibleToDate(row.LLEGADA); if(d) ref=d; }
+    let ref=row?._ASIG_TS?new Date(row._ASIG_TS):null;
+    if(!ref && row?.LLEGADA){ const d=parseFlexibleToDate(row.LLEGADA); if(d) ref=d; }
     if(ref){ const m=minutesDiff(now,ref); wait.minutes=m; if(m>=SLA_WAIT_CRIT_MIN) wait.level="crit"; else if(m>=SLA_WAIT_WARN_MIN) wait.level="warn"; }
   }
   let tope={level:null,diff:0};
-  const salidaReal=(row["SALIDA REAL"]||"").toString().trim();
-  const salidaTope=parseFlexibleToDate(row["SALIDA TOPE"]||"");
+  const salidaReal=(row?.["SALIDA REAL"]||"").toString().trim();
+  const salidaTope=parseFlexibleToDate(row?.["SALIDA TOPE"]||"");
   if(!salidaReal && salidaTope){
     const diffMin=minutesDiff(now,salidaTope); tope.diff=diffMin;
     if(diffMin>0) tope.level="crit"; else if(diffMin>=-SLA_TOPE_WARN_MIN) tope.level="warn";
@@ -216,15 +228,12 @@ export default function MecoDockManager(){
   const [filterEstado,setFilterEstado]=useState("TODOS");
   const [clock,setClock]=useState(nowISO());
   const [dockPanel,setDockPanel]=useState({open:false,dock:undefined,lado:undefined,rowId:undefined});
-  const [debugOpen,setDebugOpen]=useState(false);
   const [importInfo,setImportInfo]=useState(null);
   const [syncMsg,setSyncMsg]=useState("");
-  const [dockEdit, setDockEdit] = useState({});
 
-  // Auth
+  // Auth (placeholder)
   const [auth,setAuth]=useLocalStorage("meco-auth",{token:null,user:null});
   const [loginOpen,setLoginOpen]=useState(false);
-  const emailRef=useRef(null), passRef=useRef(null);
 
   // Resumen / modal
   const [summary,setSummary]=useState({open:false,type:null});
@@ -232,15 +241,16 @@ export default function MecoDockManager(){
   // Orden columnas (persistente)
   const [columnOrder,setColumnOrder]=useLocalStorage("meco-colorder",DEFAULT_ORDER);
 
-  // drag & drop headers
-  const dragFromIdx = useRef(null);
-
   useRealtimeSync(app,setApp);
   useEffect(()=>{ const t=setInterval(()=>setClock(nowISO()),1000); return ()=>clearInterval(t); },[]);
 
   const summaryData=useMemo(()=>{
     const all=[];
-    for(const lado of Object.keys(app.lados)){ for(const r of app.lados[lado].rows){ all.push({...r,_lado:lado}); } }
+    for(const lado of Object.keys(app?.lados||{})){
+      for(const r of (app?.lados?.[lado]?.rows||[])){
+        all.push({...r,_lado:lado});
+      }
+    }
     const is=(v,x)=> (String(v||"").toUpperCase()===x);
     let waitWarn=0, waitCrit=0, topeWarn=0, topeCrit=0;
     const waitRows=[], topeRows=[];
@@ -253,18 +263,19 @@ export default function MecoDockManager(){
       OK: all.filter(r=>is(r.ESTADO,"OK")),
       CARGANDO: all.filter(r=>is(r.ESTADO,"CARGANDO")),
       ANULADO: all.filter(r=>is(r.ESTADO,"ANULADO")),
-      INCIDENCIAS: all.filter(r=>(r.INCIDENCIAS||"").trim()!==""),
+      INCIDENCIAS: all.filter(r=>(r?.INCIDENCIAS||"").trim()!==""),
       total: all.length,
       SLA_WAIT: { warn: waitWarn, crit: waitCrit, rows: waitRows },
       SLA_TOPE: { warn: topeWarn, crit: topeCrit, rows: topeRows },
     };
   },[app]);
 
-  // updates
+  // helpers de edición
   function updateRowDirect(lado,id,patch){
     setApp(prev=>{
-      const rows=prev.lados[lado].rows.map(r=> r.id===id ? withDockAssignStamp(r,{...r,...patch}) : r );
-      return {...prev,lados:{...prev.lados,[lado]:{...prev.lados[lado],rows}}};
+      const prevRows = prev?.lados?.[lado]?.rows || [];
+      const rows=prevRows.map(r=> r.id===id ? withDockAssignStamp(r,{...r,...patch}) : r );
+      return {...prev, lados:{...prev.lados, [lado]:{...(prev.lados?.[lado]||{name:lado}), rows}}};
     });
   }
   function setField(lado,id,field,value){
@@ -288,9 +299,23 @@ export default function MecoDockManager(){
     updateRowDirect(lado,id,patch);
     return true;
   }
-  function addRow(lado){ const newRow={id:crypto.randomUUID(),ESTADO:""}; setApp(prev=>({...prev,lados:{...prev.lados[lado],rows:[newRow,...prev.lados[lado].rows]}})); }
-  function removeRow(lado,id){ setApp(prev=>({...prev,lados:{...prev.lados[lado],rows:prev.lados[lado].rows.filter(r=>r.id!==id)}})); }
-  function clearLado(lado){ setApp(prev=>({...prev,lados:{...prev.lados[lado],rows:[]}})); }
+  function addRow(lado){
+    setApp(prev=>{
+      const prevRows = prev?.lados?.[lado]?.rows || [];
+      const newRow={id:crypto.randomUUID(),ESTADO:""};
+      return {...prev, lados:{...prev.lados, [lado]:{...(prev.lados?.[lado]||{name:lado}), rows:[newRow, ...prevRows]}}};
+    });
+  }
+  function removeRow(lado,id){
+    setApp(prev=>{
+      const prevRows = prev?.lados?.[lado]?.rows || [];
+      return {...prev, lados:{...prev.lados, [lado]:{...(prev.lados?.[lado]||{name:lado}), rows: prevRows.filter(r=>r.id!==id)}}};
+    });
+  }
+  function clearLado(lado){
+    // Blindado: nunca null/undefined, siempre []
+    setApp(prev=>({...prev, lados:{...prev.lados, [lado]:{...(prev.lados?.[lado]||{name:lado}), rows:[]}}}));
+  }
 
   // ----------------- IMPORT Excel -----------------
   function importExcel(file,lado){
@@ -357,27 +382,29 @@ export default function MecoDockManager(){
     });
   }
 
-  function filteredRows(lado){ const list=app.lados[lado].rows; if(filterEstado==="TODOS") return list; return list.filter(r=>(r.ESTADO||"")===filterEstado); }
+  function filteredRows(lado){
+    const list=(app?.lados?.[lado]?.rows)||[];
+    if(filterEstado==="TODOS") return list;
+    return list.filter(r=>(r?.ESTADO||"")===filterEstado);
+  }
 
   // persistencia central (placeholders)
   async function uploadState(){ setSyncMsg("Subiendo…"); setTimeout(()=>setSyncMsg(""),1000); }
   async function downloadState(){ setSyncMsg("Cargando…"); setTimeout(()=>setSyncMsg(""),1000); }
-  async function doLogin(){}
-
   function doLogout(){ setAuth({token:null,user:null}); }
 
   // drag & drop headers
-  const dragFromIdxRef = dragFromIdx;
+  const dragFromIdx = useRef(null);
   function onHeaderDragStart(e, idx){
-    dragFromIdxRef.current = idx;
+    dragFromIdx.current = idx;
     try { e.dataTransfer.setData("text/plain", String(idx)); e.dataTransfer.effectAllowed = "move"; } catch {}
   }
   function onHeaderDragOver(e){ e.preventDefault(); try { e.dataTransfer.dropEffect = "move"; } catch {} }
   function onHeaderDrop(e, idxTo){
     e.preventDefault();
-    let from = dragFromIdxRef.current;
+    let from = dragFromIdx.current;
     if (from == null) { try { const d = e.dataTransfer.getData("text/plain"); if (d !== "") from = Number(d); } catch {} }
-    dragFromIdxRef.current = null;
+    dragFromIdx.current = null;
     if (from==null || from===idxTo) return;
     setColumnOrder(prev=>{
       const arr=[...prev]; const [moved]=arr.splice(from,1); arr.splice(idxTo,0,moved); return arr;
@@ -428,35 +455,10 @@ export default function MecoDockManager(){
                 <CardTitle>Operativas por lado</CardTitle>
                 <div className="flex items-center gap-2">
                   <Button size="sm" variant="outline" onClick={()=>setColumnOrder(DEFAULT_ORDER)}>Restablecer orden</Button>
-                  <Button size="sm" variant="outline" onClick={()=>setDebugOpen(v=>!v)}>{debugOpen?"Ocultar diagnóstico":"Ver diagnóstico de importación"}</Button>
                 </div>
               </div>
             </CardHeader>
             <CardContent>
-              {debugOpen && (
-                <div className="mb-3 p-3 border rounded text-xs bg-amber-50">
-                  <div className="font-semibold mb-1">Diagnóstico última importación</div>
-                  {!importInfo ? <div className="text-muted-foreground">Aún no has importado ningún Excel.</div> : (
-                    <>
-                      <div className="mb-2">Hojas analizadas:</div>
-                      <ul className="list-disc pl-5 space-y-1">
-                        {importInfo.sheetsTried.map((it,idx)=>(
-                          <li key={idx}><span className="font-mono">{it.sheet}</span> · cabecera fila <b>{it.headerRowIdx+1}</b> · score <b>{it.bestScore}</b> · cols: <span className="font-mono">{(it.headers||[]).join(", ")}</span> · filas: <b>{it.rows}</b></li>
-                        ))}
-                      </ul>
-                      {importInfo.chosen && (
-                        <div className="mt-2">
-                          <div><b>Usando hoja:</b> <span className="font-mono">{importInfo.chosen.sheet}</span></div>
-                          <div><b>Cabecera en fila:</b> {importInfo.chosen.headerRowIdx+1}</div>
-                          <div><b>Columnas:</b> <span className="font-mono">{(importInfo.chosen.headers||[]).join(", ")}</span></div>
-                          <div><b>Filas importadas:</b> {importInfo.chosen.rows}</div>
-                        </div>
-                      )}
-                    </>
-                  )}
-                </div>
-              )}
-
               <Tabs value={active} onValueChange={setActive}>
                 <TabsList className="flex flex-wrap">
                   {LADOS.map((n)=><TabsTrigger key={n} value={n} className="px-3">{n}</TabsTrigger>)}
@@ -479,7 +481,7 @@ export default function MecoDockManager(){
                 </div>
 
                 {LADOS.map((n)=>{
-                  const rows=app.lados[n].rows;
+                  const rows=(app?.lados?.[n]?.rows)||[];
                   const visible=visibleRowsByLado(n);
                   const gridTemplate=computeColumnTemplate(rows,columnOrder);
                   return (
@@ -506,7 +508,7 @@ export default function MecoDockManager(){
 
                           <div>
                             {visible.map((row)=>{
-                              const estado=(row.ESTADO||"").toString();
+                              const estado=(row?.ESTADO||"").toString();
                               const sla=getSLA(row);
                               const outline=slaOutlineClasses(sla);
                               const hasSLA=sla.wait.level||sla.tope.level;
@@ -519,25 +521,25 @@ export default function MecoDockManager(){
                                         return (
                                           <div key={h} className="p-1 border-r border-slate-100/60 flex items-center">
                                             {isEstado ? (
-                                              <select className="h-8 w-full border rounded px-2 bg-transparent text-sm" value={(row.ESTADO??"").toString()} onChange={(e)=>updateRow(n,row.id,{ESTADO:e.target.value})}>
+                                              <select className="h-8 w-full border rounded px-2 bg-transparent text-sm" value={(row?.ESTADO??"").toString()} onChange={(e)=>updateRow(n,row.id,{ESTADO:e.target.value})}>
                                                 <option value="">Seleccionar</option>
                                                 {CAMION_ESTADOS.map(opt=><option key={opt} value={opt}>{opt}</option>)}
                                               </select>
                                             ) : isInc ? (
-                                              <select className="h-8 w-full border rounded px-2 bg-transparent text-sm" value={(row.INCIDENCIAS??"").toString()} onChange={(e)=>updateRow(n,row.id,{INCIDENCIAS:e.target.value})}>
+                                              <select className="h-8 w-full border rounded px-2 bg-transparent text-sm" value={(row?.INCIDENCIAS??"").toString()} onChange={(e)=>updateRow(n,row.id,{INCIDENCIAS:e.target.value})}>
                                                 <option value="">Seleccionar</option>
                                                 {INCIDENTES.map(opt=><option key={opt} value={opt}>{opt}</option>)}
                                               </select>
                                             ) : isMuelle ? (
                                               <input
                                                 className="h-8 w-full border rounded px-2 bg-white text-sm"
-                                                value={(row[h] ?? "").toString()}
+                                                value={(row?.[h] ?? "").toString()}
                                                 onChange={(e)=> setField(n, row.id, "MUELLE", e.target.value)}
                                                 placeholder="nº muelle"
                                               />
                                             ) : (
                                               <input className="h-8 w-full border rounded px-2 bg-transparent text-sm"
-                                                value={(row[h]??"").toString()}
+                                                value={(row?.[h]??"").toString()}
                                                 onChange={(e)=>updateRow(n,row.id,{[h]:e.target.value})}
                                               />
                                             )}
@@ -570,42 +572,8 @@ export default function MecoDockManager(){
           <DockRight app={app} setDockPanel={setDockPanel} dockPanel={dockPanel} />
         </div>
 
-        {/* Drawer muelles */}
-        <DockDrawer
-          app={app}
-          dockPanel={dockPanel}
-          setDockPanel={setDockPanel}
-          updateRow={updateRow}
-          setField={setField}
-          dockEdit={dockEdit}
-          setDockEdit={setDockEdit}
-          commitDock={()=>{}}
-          cancelDock={()=>{}}
-        />
-
         {/* Modal resumen */}
         <SummaryModal open={summary.open} type={summary.type} data={summaryData} onClose={()=>setSummary({open:false,type:null})} />
-
-        {/* Modal Login (placeholder visible) */}
-        {loginOpen && (
-          <>
-            <div className="fixed inset-0 bg-black/30 z-[9998]" onClick={()=>setLoginOpen(false)} />
-            <div className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-[9999] w-[92vw] max-w-md bg-white rounded-2xl shadow-2xl border overflow-hidden">
-              <div className="px-4 py-3 border-b flex items-center justify-between">
-                <div className="font-semibold">Iniciar sesión</div>
-                <Button size="icon" variant="ghost" onClick={()=>setLoginOpen(false)}><X className="w-5 h-5" /></Button>
-              </div>
-              <div className="p-4 space-y-3">
-                <div><div className="text-xs text-muted-foreground mb-1">Email</div><input ref={emailRef} className="h-9 w-full border rounded px-2" type="email" placeholder="usuario@empresa.com" /></div>
-                <div><div className="text-xs text-muted-foreground mb-1">Contraseña</div><input ref={passRef} className="h-9 w-full border rounded px-2" type="password" placeholder="••••••••" /></div>
-                <div className="flex justify-end gap-2">
-                  <Button variant="outline" onClick={()=>setLoginOpen(false)}>Cancelar</Button>
-                  <Button onClick={()=>{}}><LogIn className="w-4 h-4 mr-2" />Entrar</Button>
-                </div>
-              </div>
-            </div>
-          </>
-        )}
 
         <footer className="mt-4 text-xs text-muted-foreground flex items-center justify-between">
           <div>Estados camión: <Badge className="bg-emerald-600">OK</Badge> · <Badge className="bg-amber-500">CARGANDO</Badge> · <Badge className="bg-red-600">ANULADO</Badge></div>
@@ -618,7 +586,7 @@ export default function MecoDockManager(){
 
 /* ============================= Panel derecha ============================== */
 function DockRight({app,setDockPanel,dockPanel}){
-  const docks=useMemo(()=>deriveDocks(app.lados),[app]);
+  const docks=useMemo(()=>deriveDocks(app?.lados||{}),[app]);
   const legend=(
     <div className="flex items-center gap-3 text-[11px] text-muted-foreground">
       <div className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded bg-emerald-500" /> Libre</div>
@@ -642,7 +610,7 @@ function DockRight({app,setDockPanel,dockPanel}){
                 {label}
               </motion.button>
             );
-            return dockPanel.open ? <div key={d}>{btn}</div> : (
+            return dockPanel?.open ? <div key={d}>{btn}</div> : (
               <Tooltip key={d}><TooltipTrigger asChild>{btn}</TooltipTrigger><TooltipContent><p>{tooltip}</p></TooltipContent></Tooltip>
             );
           })}
@@ -652,79 +620,77 @@ function DockRight({app,setDockPanel,dockPanel}){
   );
 }
 
-/* ============================== Drawer lateral ============================ */
-function DockDrawer({app,dockPanel,setDockPanel,updateRow,setField,dockEdit,setDockEdit,commitDock,cancelDock}){
-  return dockPanel.open && (
+/* ==================== Barra de resumen & Modal =================== */
+function SummaryBar({data,onOpen}){
+  const cards = [
+    { key:"OK", title:"OK", count:data.OK.length, color:"bg-emerald-600", sub:"Camiones en OK" },
+    { key:"CARGANDO", title:"Cargando", count:data.CARGANDO.length, color:"bg-amber-500", sub:"Camiones cargando" },
+    { key:"ANULADO", title:"Anulado", count:data.ANULADO.length, color:"bg-red-600", sub:"Camiones anulados" },
+    { key:"INCIDENCIAS", title:"Incidencias", count:data.INCIDENCIAS.length, color:"bg-indigo-600", sub:"Con incidencia" },
+    { key:"SLA_WAIT", title:"SLA Espera", count:data.SLA_WAIT.crit + data.SLA_WAIT.warn, color:"bg-amber-600", sub:"Crit / Aviso", badgeL:data.SLA_WAIT.crit, badgeR:data.SLA_WAIT.warn },
+    { key:"SLA_TOPE", title:"SLA Tope", count:data.SLA_TOPE.crit + data.SLA_TOPE.warn, color:"bg-red-700", sub:"Crit / Aviso", badgeL:data.SLA_TOPE.crit, badgeR:data.SLA_TOPE.warn },
+  ];
+  return (
+    <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
+      {cards.map(c=>(
+        <button key={c.key} onClick={()=>onOpen(c.key)} className="rounded-2xl p-3 text-left shadow hover:shadow-md transition border bg-white">
+          <div className="flex items-center justify-between">
+            <div className="text-sm text-muted-foreground">{c.title}</div>
+            <span className={`inline-flex items-center justify-center w-7 h-7 text-white text-sm font-semibold rounded-full ${c.color}`}>{c.count}</span>
+          </div>
+          {c.badgeL!=null ? (
+            <div className="mt-2 flex items-center gap-2">
+              <span className="text-[11px] inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-100 text-red-700 font-medium">Crit: {c.badgeL}</span>
+              <span className="text-[11px] inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 font-medium">Aviso: {c.badgeR}</span>
+            </div>
+          ) : (
+            <div className="mt-2 text-xs text-slate-500">{c.sub}</div>
+          )}
+        </button>
+      ))}
+    </div>
+  );
+}
+function SummaryModal({open,type,data,onClose}){
+  if(!open) return null;
+  let title="Resumen", rows=[];
+  if(type==="OK"){ title="Resumen · OK"; rows=data.OK; }
+  else if(type==="CARGANDO"){ title="Resumen · Cargando"; rows=data.CARGANDO; }
+  else if(type==="ANULADO"){ title="Resumen · Anulado"; rows=data.ANULADO; }
+  else if(type==="INCIDENCIAS"){ title="Resumen · Incidencias"; rows=data.INCIDENCIAS; }
+  else if(type==="SLA_WAIT"){ title="Resumen · SLA Espera"; rows=data.SLA_WAIT.rows; }
+  else if(type==="SLA_TOPE"){ title="Resumen · SLA Tope"; rows=data.SLA_TOPE.rows; }
+  return (
     <>
-      <div className="fixed inset-0 bg-black/30 z-[9998]" onClick={()=>setDockPanel({open:false,dock:undefined,lado:undefined,rowId:undefined})}/>
-      <div
-        className="
-          fixed right-0 top-0 h-screen
-          w-[360px] sm:w-[440px] md:w-[520px]
-          bg-white z-[9999] shadow-2xl border-l pointer-events-auto
-        "
-        onMouseDown={(e)=>e.stopPropagation()}
-        onClick={(e)=>e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between px-4 py-3 border-b">
-          <div className="font-semibold">Muelle {dockPanel.dock}</div>
-          <Button size="icon" variant="ghost" onClick={()=>setDockPanel({open:false,dock:undefined,lado:undefined,rowId:undefined})}><X className="w-5 h-5" /></Button>
+      <div className="fixed inset-0 bg-black/30 z-[9998]" onClick={onClose}/>
+      <div className="fixed left-1/2 top-6 -translate-x-1/2 z-[9999] w-[95vw] max-w-6xl bg-white rounded-2xl shadow-2xl border overflow-hidden">
+        <div className="px-4 py-3 border-b flex items-center justify-between">
+          <div className="font-semibold">{title}</div>
+          <Button size="icon" variant="ghost" onClick={onClose}><X className="w-5 h-5" /></Button>
         </div>
-        <div className="p-4 space-y-3 overflow-y-auto h-[calc(100vh-56px)]">
-          {(()=>{
-            const {lado,rowId}=dockPanel; 
-            if(!lado||!rowId) return <div className="text-emerald-600 font-medium">Muelle libre</div>;
-            const r=app.lados[lado]?.rows.find(rr=>rr.id===rowId); 
-            if(!r) return <div className="text-muted-foreground">No se encontró la fila.</div>;
-            const estado=(r.ESTADO||"").toString();
-            return (
-              <div className="space-y-3">
-                <KV label="Lado" value={lado} />
-                <KV label="Matrícula" value={r.MATRICULA||"—"} />
-                <KV label="Destino" value={r.DESTINO||"—"} wrap />
-
-                <div className="flex items-center justify-between">
-                  <div className="text-sm text-muted-foreground">Estado</div>
-                  {estado ? <Badge className={`${estadoBadgeColor(estado)} text-white`}>{estado}</Badge> : <span className="text-slate-400 text-sm">—</span>}
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
-                  <InputX label="Llegada real" value={(r["LLEGADA REAL"]??"").toString()} onChange={(v)=>updateRow(lado,r.id,{"LLEGADA REAL":v})} placeholder="hh:mm / ISO" />
-                  <InputX label="Salida real" value={(r["SALIDA REAL"]??"").toString()} onChange={(v)=>updateRow(lado,r.id,{"SALIDA REAL":v})} placeholder="hh:mm / ISO" />
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide leading-tight">Muelle</div>
-                    <input
-                      className="h-9 w-full border rounded px-2 bg-white text-sm"
-                      value={(r["MUELLE"] ?? "").toString()}
-                      onChange={(e)=> setField(lado, r.id, "MUELLE", e.target.value)}
-                      placeholder="nº muelle"
-                    />
-                    <div className="text-[10px] text-muted-foreground mt-1">Permitidos: 312–369 (según lista)</div>
-                  </div>
-
-                  <InputX label="Precinto" value={(r["PRECINTO"]??"").toString()} onChange={(v)=>updateRow(lado,r.id,{"PRECINTO":v})} placeholder="Precinto" />
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <SelectX label="Incidencias" value={(r["INCIDENCIAS"]??"").toString()} onChange={(v)=>updateRow(lado,r.id,{"INCIDENCIAS":v})} options={INCIDENTES} />
-                  <SelectX label="Estado" value={estado} onChange={(v)=>updateRow(lado,r.id,{"ESTADO":v})} options={CAMION_ESTADOS} />
-                </div>
-
+        <div className="p-3 max-h-[75vh] overflow-auto">
+          <div className="grid grid-cols-[90px_140px_minmax(140px,1fr)_80px_120px_120px_minmax(160px,1fr)] gap-2 text-[11px] font-semibold text-muted-foreground uppercase tracking-wide mb-2">
+            <div>Lado</div><div>Matrícula</div><div>Destino</div><div>Muelle</div><div>Llegada real</div><div>Salida real</div><div>{type==="INCIDENCIAS"?"Incidencias": type?.startsWith("SLA_")?"Motivo": "Estado"}</div>
+          </div>
+          <div className="divide-y">
+            {rows.map((r)=>(
+              <div key={r.id} className="grid grid-cols-[90px_140px_minmax(140px,1fr)_80px_120px_120px_minmax(160px,1fr)] gap-2 py-2 text-sm">
+                <div className="font-medium">{r._lado}</div>
+                <div className="truncate">{r.MATRICULA||"—"}</div>
+                <div className="truncate">{r.DESTINO||"—"}</div>
+                <div>{r.MUELLE||"—"}</div>
+                <div>{r["LLEGADA REAL"]||"—"}</div>
+                <div>{r["SALIDA REAL"]||"—"}</div>
                 <div>
-                  <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide leading-tight">Observaciones</div>
-                  <textarea
-                    className="min-h-[72px] w-full border rounded px-2 py-1 bg-white text-sm"
-                    value={(r.OBSERVACIONES??"").toString()}
-                    onChange={(e)=>updateRow(lado,r.id,{OBSERVACIONES:e.target.value})}
-                    placeholder="Añade notas"
-                  />
+                  {type==="INCIDENCIAS" ? (r.INCIDENCIAS||"—")
+                   : type==="SLA_WAIT"  ? (r._sla?.tip || "Espera en muelle")
+                   : type==="SLA_TOPE"  ? (r._sla?.tip || "Salida tope")
+                   : (r.ESTADO||"—")}
                 </div>
               </div>
-            );
-          })()}
+            ))}
+            {rows.length===0 && <div className="text-sm text-muted-foreground py-6 text-center">No hay elementos para mostrar.</div>}
+          </div>
         </div>
       </div>
     </>
@@ -800,84 +766,6 @@ function AlertStrip({ waitCrit, waitWarn, topeCrit, topeWarn, onOpen }) {
   );
 }
 
-/* ==================== Barra de resumen & Modal =================== */
-function SummaryBar({data,onOpen}){
-  const cards = [
-    { key:"OK", title:"OK", count:data.OK.length, color:"bg-emerald-600", sub:"Camiones en OK" },
-    { key:"CARGANDO", title:"Cargando", count:data.CARGANDO.length, color:"bg-amber-500", sub:"Camiones cargando" },
-    { key:"ANULADO", title:"Anulado", count:data.ANULADO.length, color:"bg-red-600", sub:"Camiones anulados" },
-    { key:"INCIDENCIAS", title:"Incidencias", count:data.INCIDENCIAS.length, color:"bg-indigo-600", sub:"Con incidencia" },
-    { key:"SLA_WAIT", title:"SLA Espera", count:data.SLA_WAIT.crit + data.SLA_WAIT.warn, color:"bg-amber-600", sub:"Crit / Aviso", badgeL:data.SLA_WAIT.crit, badgeR:data.SLA_WAIT.warn },
-    { key:"SLA_TOPE", title:"SLA Tope", count:data.SLA_TOPE.crit + data.SLA_TOPE.warn, color:"bg-red-700", sub:"Crit / Aviso", badgeL:data.SLA_TOPE.crit, badgeR:data.SLA_TOPE.warn },
-  ];
-  return (
-    <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
-      {cards.map(c=>(
-        <button key={c.key} onClick={()=>onOpen(c.key)} className="rounded-2xl p-3 text-left shadow hover:shadow-md transition border bg-white">
-          <div className="flex items-center justify-between">
-            <div className="text-sm text-muted-foreground">{c.title}</div>
-            <span className={`inline-flex items-center justify-center w-7 h-7 text-white text-sm font-semibold rounded-full ${c.color}`}>{c.count}</span>
-          </div>
-          {c.badgeL!=null ? (
-            <div className="mt-2 flex items-center gap-2">
-              <span className="text-[11px] inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-100 text-red-700 font-medium">Crit: {c.badgeL}</span>
-              <span className="text-[11px] inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 font-medium">Aviso: {c.badgeR}</span>
-            </div>
-          ) : (
-            <div className="mt-2 text-xs text-slate-500">{c.sub}</div>
-          )}
-        </button>
-      ))}
-    </div>
-  );
-}
-
-function SummaryModal({open,type,data,onClose}){
-  if(!open) return null;
-  let title="Resumen", rows=[];
-  if(type==="OK"){ title="Resumen · OK"; rows=data.OK; }
-  else if(type==="CARGANDO"){ title="Resumen · Cargando"; rows=data.CARGANDO; }
-  else if(type==="ANULADO"){ title="Resumen · Anulado"; rows=data.ANULADO; }
-  else if(type==="INCIDENCIAS"){ title="Resumen · Incidencias"; rows=data.INCIDENCIAS; }
-  else if(type==="SLA_WAIT"){ title="Resumen · SLA Espera"; rows=data.SLA_WAIT.rows; }
-  else if(type==="SLA_TOPE"){ title="Resumen · SLA Tope"; rows=data.SLA_TOPE.rows; }
-  return (
-    <>
-      <div className="fixed inset-0 bg-black/30 z-[9998]" onClick={onClose}/>
-      <div className="fixed left-1/2 top-6 -translate-x-1/2 z-[9999] w-[95vw] max-w-6xl bg-white rounded-2xl shadow-2xl border overflow-hidden">
-        <div className="px-4 py-3 border-b flex items-center justify-between">
-          <div className="font-semibold">{title}</div>
-          <Button size="icon" variant="ghost" onClick={onClose}><X className="w-5 h-5" /></Button>
-        </div>
-        <div className="p-3 max-h-[75vh] overflow-auto">
-          <div className="grid grid-cols-[90px_140px_minmax(140px,1fr)_80px_120px_120px_minmax(160px,1fr)] gap-2 text-[11px] font-semibold text-muted-foreground uppercase tracking-wide mb-2">
-            <div>Lado</div><div>Matrícula</div><div>Destino</div><div>Muelle</div><div>Llegada real</div><div>Salida real</div><div>{type==="INCIDENCIAS"?"Incidencias": type?.startsWith("SLA_")?"Motivo": "Estado"}</div>
-          </div>
-          <div className="divide-y">
-            {rows.map((r)=>(
-              <div key={r.id} className="grid grid-cols-[90px_140px_minmax(140px,1fr)_80px_120px_120px_minmax(160px,1fr)] gap-2 py-2 text-sm">
-                <div className="font-medium">{r._lado}</div>
-                <div className="truncate">{r.MATRICULA||"—"}</div>
-                <div className="truncate">{r.DESTINO||"—"}</div>
-                <div>{r.MUELLE||"—"}</div>
-                <div>{r["LLEGADA REAL"]||"—"}</div>
-                <div>{r["SALIDA REAL"]||"—"}</div>
-                <div>
-                  {type==="INCIDENCIAS" ? (r.INCIDENCIAS||"—")
-                   : type==="SLA_WAIT"  ? (r._sla?.tip || "Espera en muelle")
-                   : type==="SLA_TOPE"  ? (r._sla?.tip || "Salida tope")
-                   : (r.ESTADO||"—")}
-                </div>
-              </div>
-            ))}
-            {rows.length===0 && <div className="text-sm text-muted-foreground py-6 text-center">No hay elementos para mostrar.</div>}
-          </div>
-        </div>
-      </div>
-    </>
-  );
-}
-
 /* ============================ Toolbar & Export ============================ */
 function ToolbarX({onImport,onAddRow,onClear,filterEstado,setFilterEstado,onExportCSV,onExportXLSX,onResetCache,onUploadState,onDownloadState,syncMsg}){
   const fileRef=useRef(null);
@@ -907,22 +795,22 @@ function ToolbarX({onImport,onAddRow,onClear,filterEstado,setFilterEstado,onExpo
 }
 
 function exportCSV(lado,app,columnOrder){
-  const headers=columnOrder, rows=app.lados[lado].rows||[];
+  const headers=columnOrder, rows=(app?.lados?.[lado]?.rows)||[];
   const SEP=";"; const esc=(val)=>{ const s=(val??"").toString().replace(/\r?\n/g," "); const doubled=s.replace(/"/g,'""'); return `"${doubled}"`; };
   const headerLine=headers.map(h=>esc(h)).join(SEP);
-  const dataLines=rows.map(r=>headers.map(h=>esc(r[h])).join(SEP));
+  const dataLines=rows.map(r=>headers.map(h=>esc(r?.[h])).join(SEP));
   const content="\uFEFF"+"sep="+SEP+"\r\n"+[headerLine,...dataLines].join("\r\n");
   const blob=new Blob([content],{type:"text/csv;charset=utf-8;"}); const url=URL.createObjectURL(blob);
   const a=document.createElement("a"); a.href=url; a.download=`${lado.replace(/\s+/g,"_")}.csv`; a.click(); URL.revokeObjectURL(url);
 }
 function exportXLSX(lado,app,columnOrder){
-  const headers=columnOrder, rows=app.lados[lado].rows||[];
-  const data=rows.map(r=>{ const o={}; headers.forEach(h=>{o[h]=r[h]??""}); return o; });
+  const headers=columnOrder, rows=(app?.lados?.[lado]?.rows)||[];
+  const data=rows.map(r=>{ const o={}; headers.forEach(h=>{o[h]=r?.[h]??""}); return o; });
   const ws=XLSX.utils.json_to_sheet(data,{header:headers,skipHeader:false});
   const colWidths=headers.map(h=>{
     if (h in FIXED_PX) return { wpx: FIXED_PX[h] };
     if (TIME_COLS.has(h)) return { wpx: PX_TIME };
-    return { wpx: 140 }; // por defecto razonable para resto
+    return { wpx: 140 };
   });
   ws["!cols"]=colWidths;
   const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,lado.replace(/[\\/?*[\]]/g,"_").slice(0,31));
