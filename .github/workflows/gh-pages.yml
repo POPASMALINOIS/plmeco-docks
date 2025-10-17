@@ -27,8 +27,9 @@ jobs:
           node-version: '20'
           cache: 'npm'
 
-      - name: Install deps (clean)
-        run: npm ci --no-audit --no-fund
+      # Usamos npm install para NO requerir lockfile
+      - name: Install deps
+        run: npm install --no-audit --no-fund
 
       - name: Build
         run: npm run build
