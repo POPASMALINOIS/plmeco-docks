@@ -38,12 +38,9 @@ export function useSharedState<T>(
     const socket = io(BACKEND_URL, { transports: ["websocket"], auth: { token: BACKEND_TOKEN } });
     socketRef.current = socket;
 
-    socket.on("connect", () => { /* opcional: console.log("WS connected") */ });
-
     // Estado inicial desde el backend
     socket.on("state:init", (remote: any) => {
       const local = safeParse<T>(localStorage.getItem(storageKey), initial);
-      // Si local está vacío, adopta remoto; si no, sube mi local (replace)
       const isEmptyLocal = !local || (typeof local === "object" && Object.keys(local as any).length === 0);
       if (isEmptyLocal) {
         setState(remote);
@@ -62,8 +59,6 @@ export function useSharedState<T>(
     socket.on("state:patch", (delta: any) => {
       setState(prev => deepMerge(prev, delta));
     });
-
-    socket.on("disconnect", () => { /* opcional: console.log("WS disconnected") */ });
 
     return () => {
       socket.disconnect();
