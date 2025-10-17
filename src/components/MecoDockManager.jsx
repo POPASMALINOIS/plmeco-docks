@@ -1,6 +1,6 @@
 // src/components/MecoDockManager.jsx
 // App de gestión de muelles con plantillas, validación, panel lateral, etc.
-// + NUEVO: Carga aérea por muelle 338–350 (destinos/m³/bx con totales por camión)
+// + “Carga aérea” (destinos/m³/bx con totales) AHORA EN TODOS LOS MUELLES
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -25,8 +25,6 @@ const DOCKS = [
   359,360,361,362,363,364,365,366,367,368,369,370,
 ];
 const LADOS = Array.from({ length: 10 }, (_, i) => `Lado ${i}`);
-const AIR_DOCK_MIN = 338;
-const AIR_DOCK_MAX = 350;
 
 /* ========================= Catálogos ========================= */
 const INCIDENTES = [
@@ -651,7 +649,7 @@ export default function MecoDockManager(){
           <DockRight app={app} setDockPanel={setDockPanel} dockPanel={dockPanel} />
         </div>
 
-        {/* Drawer muelles (con bloque de "Carga aérea" para muelles 338–350) */}
+        {/* Drawer muelles con “Carga aérea” en TODOS los muelles */}
         <DockDrawer
           app={app}
           dockPanel={dockPanel}
@@ -785,7 +783,6 @@ function DockDrawer({app,dockPanel,setDockPanel,updateRowDirect,commitDockValue,
 
   const { lado, rowId, dock } = dockPanel;
   const row = (lado && rowId) ? (app?.lados?.[lado]?.rows||[]).find(r=>r.id===rowId) : null;
-  const isAirDock = typeof dock === "number" && dock >= AIR_DOCK_MIN && dock <= AIR_DOCK_MAX;
 
   function marcarLlegadaAhora(){
     if(!lado || !row) return;
@@ -806,7 +803,7 @@ function DockDrawer({app,dockPanel,setDockPanel,updateRowDirect,commitDockValue,
     setField(lado, row.id, "SALIDA REAL", now);
   }
 
-  // ====== AIR ITEMS helpers (solo para muelles 338–350)
+  // ====== AIR ITEMS helpers (ahora en TODOS los muelles)
   function airItems(rowObj){
     const arr = rowObj?._AIR_ITEMS;
     return Array.isArray(arr) ? arr : [];
@@ -930,82 +927,80 @@ function DockDrawer({app,dockPanel,setDockPanel,updateRowDirect,commitDockValue,
                 />
               </div>
 
-              {/* ============= BLOQUE CARGA AÉREA PARA MUELLES 338–350 ============= */}
-              {isAirDock && (
-                <div className="mt-2 border-t pt-3">
-                  <div className="flex items-center justify-between mb-2">
-                    <div className="font-semibold">Carga aérea (solo muelles {AIR_DOCK_MIN}–{AIR_DOCK_MAX})</div>
-                    <Button size="sm" onClick={addAirItem}>
-                      <Plus className="w-4 h-4 mr-2" />
-                      Añadir destino aéreo
-                    </Button>
-                  </div>
+              {/* ============= BLOQUE CARGA AÉREA (EN TODOS LOS MUELLES) ============= */}
+              <div className="mt-2 border-t pt-3">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="font-semibold">Carga aérea</div>
+                  <Button size="sm" onClick={addAirItem}>
+                    <Plus className="w-4 h-4 mr-2" />
+                    Añadir destino aéreo
+                  </Button>
+                </div>
 
-                  <div className="overflow-auto">
-                    <div className="min-w-[560px]">
-                      <div className="grid grid-cols-[minmax(220px,1fr)_110px_110px_60px] gap-2 px-2 py-2 bg-slate-50 border rounded-t text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">
-                        <div>Destino</div>
-                        <div>m³</div>
-                        <div>bx</div>
-                        <div>Acc.</div>
-                      </div>
-
-                      {airItems(row).length===0 && (
-                        <div className="px-3 py-3 text-sm text-muted-foreground border-x border-b rounded-b">
-                          No hay destinos aéreos añadidos para este camión.
-                        </div>
-                      )}
-
-                      {airItems(row).length>0 && (
-                        <div className="border-x border-b rounded-b divide-y">
-                          {airItems(row).map(item=>(
-                            <div key={item.id} className="grid grid-cols-[minmax(220px,1fr)_110px_110px_60px] gap-2 px-2 py-2 items-center">
-                              <input
-                                className="h-9 w-full border rounded px-2 bg-white text-sm"
-                                placeholder="Destino aéreo (independiente del DESTINO general)"
-                                value={item.dest||""}
-                                onChange={(e)=>updateAirItem(item.id, { dest: e.target.value })}
-                              />
-                              <input
-                                className="h-9 w-full border rounded px-2 bg-white text-sm"
-                                placeholder="0.00"
-                                inputMode="decimal"
-                                value={item.m3??""}
-                                onChange={(e)=>updateAirItem(item.id, { m3: e.target.value })}
-                              />
-                              <input
-                                className="h-9 w-full border rounded px-2 bg-white text-sm"
-                                placeholder="0"
-                                inputMode="numeric"
-                                value={item.bx??""}
-                                onChange={(e)=>updateAirItem(item.id, { bx: e.target.value })}
-                              />
-                              <div className="flex items-center justify-center">
-                                <Button size="icon" variant="ghost" className="h-8 w-8" onClick={()=>removeAirItem(item.id)} title="Eliminar">
-                                  <X className="w-4 h-4" />
-                                </Button>
-                              </div>
-                            </div>
-                          ))}
-
-                          {/* Totales */}
-                          {(() => {
-                            const t = totalsAir(airItems(row));
-                            return (
-                              <div className="grid grid-cols-[minmax(220px,1fr)_110px_110px_60px] gap-2 px-2 py-2 bg-slate-50/70 items-center">
-                                <div className="text-sm font-medium text-right pr-2">Totales</div>
-                                <div className="text-sm font-semibold">{t.m3.toFixed(2)}</div>
-                                <div className="text-sm font-semibold">{t.bx}</div>
-                                <div />
-                              </div>
-                            );
-                          })()}
-                        </div>
-                      )}
+                <div className="overflow-auto">
+                  <div className="min-w-[560px]">
+                    <div className="grid grid-cols-[minmax(220px,1fr)_110px_110px_60px] gap-2 px-2 py-2 bg-slate-50 border rounded-t text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">
+                      <div>Destino</div>
+                      <div>m³</div>
+                      <div>bx</div>
+                      <div>Acc.</div>
                     </div>
+
+                    {airItems(row).length===0 && (
+                      <div className="px-3 py-3 text-sm text-muted-foreground border-x border-b rounded-b">
+                        No hay destinos aéreos añadidos para este camión.
+                      </div>
+                    )}
+
+                    {airItems(row).length>0 && (
+                      <div className="border-x border-b rounded-b divide-y">
+                        {airItems(row).map(item=>(
+                          <div key={item.id} className="grid grid-cols-[minmax(220px,1fr)_110px_110px_60px] gap-2 px-2 py-2 items-center">
+                            <input
+                              className="h-9 w-full border rounded px-2 bg-white text-sm"
+                              placeholder="Destino aéreo (independiente del DESTINO general)"
+                              value={item.dest||""}
+                              onChange={(e)=>updateAirItem(item.id, { dest: e.target.value })}
+                            />
+                            <input
+                              className="h-9 w-full border rounded px-2 bg-white text-sm"
+                              placeholder="0.00"
+                              inputMode="decimal"
+                              value={item.m3??""}
+                              onChange={(e)=>updateAirItem(item.id, { m3: e.target.value })}
+                            />
+                            <input
+                              className="h-9 w-full border rounded px-2 bg-white text-sm"
+                              placeholder="0"
+                              inputMode="numeric"
+                              value={item.bx??""}
+                              onChange={(e)=>updateAirItem(item.id, { bx: e.target.value })}
+                            />
+                            <div className="flex items-center justify-center">
+                              <Button size="icon" variant="ghost" className="h-8 w-8" onClick={()=>removeAirItem(item.id)} title="Eliminar">
+                                <X className="w-4 h-4" />
+                              </Button>
+                            </div>
+                          </div>
+                        ))}
+
+                        {/* Totales */}
+                        {(() => {
+                          const t = totalsAir(airItems(row));
+                          return (
+                            <div className="grid grid-cols-[minmax(220px,1fr)_110px_110px_60px] gap-2 px-2 py-2 bg-slate-50/70 items-center">
+                              <div className="text-sm font-medium text-right pr-2">Totales</div>
+                              <div className="text-sm font-semibold">{t.m3.toFixed(2)}</div>
+                              <div className="text-sm font-semibold">{t.bx}</div>
+                              <div />
+                            </div>
+                          );
+                        })()}
+                      </div>
+                    )}
                   </div>
                 </div>
-              )}
+              </div>
               {/* =================================================================== */}
             </>
           )}
