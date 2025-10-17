@@ -1,6 +1,7 @@
 // src/components/MecoDockManager.jsx
 // App de gestión de muelles con plantillas, validación, panel lateral, etc.
-// + “Carga aérea” (destinos/m³/bx con totales) AHORA EN TODOS LOS MUELLES
+// + “Carga aérea” (destinos/m³/bx con totales) en TODOS los muelles
+// + Badge m³/bx en cada botón de muelle cuando existan items de carga aérea
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -305,6 +306,20 @@ function applyTemplatesToLado(app, setApp, ladoName, templates){
     }
   }
   setApp(draft);
+}
+
+/* ==================== Totales de carga aérea (reutilizable) ================ */
+function airTotalsFromRow(row){
+  const list = Array.isArray(row?._AIR_ITEMS) ? row._AIR_ITEMS : [];
+  let m3=0, bx=0;
+  for(const it of list){
+    const m = parseFloat(String(it?.m3 ?? "").replace(",", "."));
+    const b = parseInt(String(it?.bx ?? "").replace(",", "."));
+    if(!Number.isNaN(m)) m3 += m;
+    if(!Number.isNaN(b)) bx += b;
+  }
+  // 1 decimal para el badge
+  return { m3: Math.round(m3*10)/10, bx: Math.round(bx) };
 }
 
 /* ============================== Componente ================================ */
@@ -692,6 +707,7 @@ export default function MecoDockManager(){
 /* ============================= Panel derecha ============================== */
 function DockRight({app,setDockPanel,dockPanel}){
   const docks=useMemo(()=>deriveDocks(app?.lados||{}),[app]);
+
   function shouldShowTopeIcon(info){
     const row = info?.row;
     if(!row) return false;
@@ -714,6 +730,7 @@ function DockRight({app,setDockPanel,dockPanel}){
     if(diff >= -SLA_TOPE_ICON_PREMIN) return "warn";
     return null;
   }
+
   const legend=(
     <div className="flex items-center gap-3 text-[11px] text-muted-foreground">
       <div className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded bg-emerald-500" /> Libre</div>
@@ -721,6 +738,7 @@ function DockRight({app,setDockPanel,dockPanel}){
       <div className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded bg-red-600" /> Ocupado</div>
     </div>
   );
+
   return (
     <Card className="w-[290px]">
       <CardHeader className="pb-2 flex flex-col gap-2">
@@ -741,6 +759,23 @@ function DockRight({app,setDockPanel,dockPanel}){
             const sev = iconSeverity(info);
             const iconTitle = sev==="crit" ? "SALIDA TOPE rebasada" : "SALIDA TOPE en ≤5 min";
 
+            // Badge de carga aérea (totales)
+            let airBadge = null;
+            if (info?.row) {
+              const totals = airTotalsFromRow(info.row);
+              const hasAir = Array.isArray(info.row._AIR_ITEMS) && info.row._AIR_ITEMS.length > 0;
+              if (hasAir) {
+                airBadge = (
+                  <span
+                    title={`${totals.m3} m³ / ${totals.bx} bx`}
+                    className="absolute bottom-0.5 right-0.5 text-[10px] px-1.5 py-0.5 rounded bg-white/95 border border-slate-300 text-slate-700 shadow"
+                  >
+                    {totals.m3}m³/{totals.bx}bx
+                  </span>
+                );
+              }
+            }
+
             const btn=(
               <motion.button
                 whileTap={{scale:0.96}}
@@ -758,6 +793,7 @@ function DockRight({app,setDockPanel,dockPanel}){
                     <AlertTriangle className={`w-3.5 h-3.5 ${sev==="crit" ? "text-red-600" : "text-amber-500"}`} />
                   </span>
                 )}
+                {airBadge}
               </motion.button>
             );
 
@@ -803,7 +839,7 @@ function DockDrawer({app,dockPanel,setDockPanel,updateRowDirect,commitDockValue,
     setField(lado, row.id, "SALIDA REAL", now);
   }
 
-  // ====== AIR ITEMS helpers (ahora en TODOS los muelles)
+  // ====== AIR ITEMS helpers (en TODOS los muelles)
   function airItems(rowObj){
     const arr = rowObj?._AIR_ITEMS;
     return Array.isArray(arr) ? arr : [];
@@ -920,7 +956,7 @@ function DockDrawer({app,dockPanel,setDockPanel,updateRowDirect,commitDockValue,
               <div>
                 <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide leading-tight">Observaciones</div>
                 <textarea
-                  className="min-h-[90px] w-full border rounded px-2 py-1 bg-white text-sm"
+                  className="min-h:[90px] w-full border rounded px-2 py-1 bg-white text-sm"
                   value={(row.OBSERVACIONES??"").toString()}
                   onChange={(e)=>setField(lado,row.id,"OBSERVACIONES",e.target.value)}
                   placeholder="Añade notas"
