@@ -15,10 +15,12 @@ const SLA_WAIT_CRIT_MIN = 30;
 const SLA_TOPE_WARN_MIN = 15;
 /* ============================================================== */
 
+// Muelles permitidos (actualizado): 312–357 (sin 358) y 359–370, con añadidos 338–350 y 370
 const DOCKS = [
-  312,313,314,315,316,317,318,319,320,321,322,323,324,325,326,327,328,329,330,331,332,333,334,335,336,337,338,
-  339,340,341,342,343,344,345,346,347,348,349
-  351,352,353,354,355,356,357,359,360,361,362,363,364,365,366,367,368,369,370
+  312,313,314,315,316,317,318,319,320,321,322,323,324,325,326,327,328,329,330,331,332,333,334,335,336,337,
+  338,339,340,341,342,343,344,345,346,347,348,349,350,
+  351,352,353,354,355,356,357,
+  359,360,361,362,363,364,365,366,367,368,369,370,
 ];
 const LADOS = Array.from({ length: 10 }, (_, i) => `Lado ${i}`);
 
@@ -685,7 +687,7 @@ function DockDrawer({app,dockPanel,setDockPanel,updateRowDirect,commitDockValue,
                     onBlur={(e)=> commitDockValue(lado, row.id, e.target.value)}
                     placeholder="nº muelle"
                   />
-                  <div className="text-[10px] text-muted-foreground mt-1">Permitidos: 312–369 (según lista)</div>
+                  <div className="text-[10px] text-muted-foreground mt-1">Permitidos: 312–357 y 359–370</div>
                 </div>
 
                 <InputX label="Precinto" value={(row["PRECINTO"]??"").toString()} onChange={(v)=>setField(lado,row.id,"PRECINTO",v)} placeholder="Precinto" />
