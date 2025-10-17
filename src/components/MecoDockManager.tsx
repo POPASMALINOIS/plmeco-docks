@@ -1,14 +1,14 @@
 // src/components/MecoDockManager.tsx
 // App de gestión de muelles (TypeScript) con:
-// - Importación XLSX (lee desde fila de cabeceras detectada automáticamente)
+// - Importación XLSX (detección de cabeceras automática)
 // - Edición en tabla, validación de muelles y conflictos entre lados
-// - Panel lateral (drawer) por muelle con botones "Llegada" y "Salida"
-// - "Carga aérea" (destino/m3/bx) por muelle, totales y marcador de avión si hay ítems
+// - Panel lateral (drawer) con botones “Llegada” y “Salida” (ahora)
+// - Carga aérea (destino/m3/bx) por muelle, totales e icono de avión si hay ítems
 // - Resumen superior con contadores y modal de detalle
 // - Icono de warning en botón de muelle cuando se acerca/supera SALIDA TOPE
-// - Reordenación de columnas por “drag” y persistencia en localStorage
+// - Reordenación de columnas “drag & drop” y persistencia en localStorage
 // - Exportar .xlsx (simple) y filtro por estado
-// - Sin estilos de Excel (dependemos solo de xlsx)
+// - SIN BroadcastChannel: sincronización en tiempo real vía Socket.IO (useSharedState)
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
@@ -17,6 +17,8 @@ import {
   Download, FileUp, Plus, Trash2, X, AlertTriangle, GripVertical,
   RefreshCw, Truck, BookmarkPlus, Upload, Save, Plane
 } from "lucide-react";
+
+import { useSharedState } from "@/sync/sharedState";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -31,8 +33,8 @@ type Estado = "" | "OK" | "CARGANDO" | "ANULADO";
 interface AirItem {
   id: string;
   dest: string;
-  m3: string; // texto editable (lo convertimos para totales)
-  bx: string; // texto editable (lo convertimos para totales)
+  m3: string;
+  bx: string;
 }
 
 interface RowData {
@@ -52,11 +54,10 @@ interface RowData {
   INCIDENCIAS?: string;
   ESTADO?: Estado;
 
-  // Campos internos
-  _ASIG_TS?: string;       // marca de tiempo al asignar muelle
-  _lado?: string;          // relleno al construir summary
-  _sla?: { tip?: string }; // texto SLA en modal
-  _AIR_ITEMS?: AirItem[];  // destinos aéreos
+  _ASIG_TS?: string;
+  _lado?: string;
+  _sla?: { tip?: string };
+  _AIR_ITEMS?: AirItem[];
 }
 
 interface LadoState {
@@ -73,8 +74,8 @@ type SlaLevel = "warn" | "crit" | null;
 
 /* ========================= Parámetros ========================= */
 
-const SLA_TOPE_WARN_MIN = 15;       // resumen superior
-const SLA_TOPE_ICON_PREMIN = 5;     // icono en botón muelle
+const SLA_TOPE_WARN_MIN = 15;
+const SLA_TOPE_ICON_PREMIN = 5;
 const LADOS = Array.from({ length: 10 }, (_, i) => `Lado ${i}`);
 
 const DOCKS = [
@@ -188,11 +189,11 @@ function minutesDiff(a: Date, b: Date): number {
 const HEADER_CELL_CLASS = "bg-slate-50 px-1 py-0.5 border-r border-slate-200 select-none";
 const HEADER_TEXT_CLASS = "text-[9px] leading-none font-semibold text-muted-foreground uppercase tracking-wide";
 
-const PX_TIME = 80;           // LLEGADA y SALIDA
-const PX_TIME_REAL = 100;     // LLEGADA REAL y SALIDA REAL
-const PX_TIME_TOPE = 100;     // SALIDA TOPE
-const PX_MUELLE = 90;         // MUELLE
-const PX_ESTADO = 130;        // ESTADO
+const PX_TIME = 80;
+const PX_TIME_REAL = 100;
+const PX_TIME_TOPE = 100;
+const PX_MUELLE = 90;
+const PX_ESTADO = 130;
 
 const PX_TRANSPORTISTA = 160;
 const PX_MATRICULA = 120;
@@ -245,32 +246,15 @@ function estadoBadgeColor(estado?: Estado): string {
   return "bg-slate-400";
 }
 
-/* ========================= Persistencia local ========================= */
+/* ========================= Persistencia compartida (Socket.IO) ========================= */
 
-function useLocalStorage<T>(key: string, initial: T): [T, React.Dispatch<React.SetStateAction<T>>] {
-  const [state, setState] = useState<T>(() => {
-    try { const raw = localStorage.getItem(key); return raw ? JSON.parse(raw) as T : initial; }
-    catch { return initial; }
+function useColumnOrder(): [string[], React.Dispatch<React.SetStateAction<string[]>>] {
+  const [order, setOrder] = useState<string[]>(() => {
+    try { const raw = localStorage.getItem("meco-colorder"); return raw ? JSON.parse(raw) : DEFAULT_ORDER; }
+    catch { return DEFAULT_ORDER; }
   });
-  useEffect(() => { try { localStorage.setItem(key, JSON.stringify(state)); } catch {} }, [key, state]);
-  return [state, setState];
-}
-
-/* ========================= Sync pestañas ========================= */
-
-function useRealtimeSync<T>(state: T, setState: (v: T) => void) {
-  const bcRef = useRef<BroadcastChannel | null>(null);
-  useEffect(() => {
-    try { bcRef.current = new BroadcastChannel("meco-docks"); } catch {}
-    const bc = bcRef.current;
-    const onMsg = (ev: MessageEvent) => {
-      const data = (ev?.data as any);
-      if (data?.type === "APP_STATE" && data.payload) setState(data.payload);
-    };
-    if (bc && "addEventListener" in bc) bc.addEventListener("message", onMsg as any);
-    return () => { if (bc && "removeEventListener" in bc) bc.removeEventListener("message", onMsg as any); };
-  }, [setState]);
-  useEffect(() => { try { bcRef.current?.postMessage?.({ type: "APP_STATE", payload: state }); } catch {} }, [state]);
+  useEffect(()=>{ try { localStorage.setItem("meco-colorder", JSON.stringify(order)); } catch {} }, [order]);
+  return [order, setOrder];
 }
 
 /* ========================= Derivar estado de muelles ========================= */
@@ -365,19 +349,15 @@ function getSLA(row: RowData): { tope: { level: SlaLevel; diff: number }, tip: s
 
 interface TemplateRule {
   id: string;
-  lado: string;            // "Todos" o "Lado 0"...
-  pattern: string;         // comodín / regex / literal
+  lado: string;
+  pattern: string;
   muelles: number[];
   prioridad: number;
-  dias: string[];          // L,M,X,J,V,S,D
+  dias: string[];
   activo: boolean;
 }
 
 const DAYS = ["L","M","X","J","V","S","D"] as const;
-function todayLetter(): string {
-  const n = new Date().getDay(); // 0..6
-  return ["D","L","M","X","J","V","S"][n];
-}
 function matchPattern(text: string, patternRaw: string): boolean {
   const textN = (text || "").toString().toUpperCase().trim();
   if (!patternRaw) return false;
@@ -396,17 +376,25 @@ function matchPattern(text: string, patternRaw: string): boolean {
   if (up.endsWith("*")) return textN.startsWith(up.slice(0,-1));
   return textN === up;
 }
+function todayLetter(): string {
+  const n = new Date().getDay();
+  return ["D","L","M","X","J","V","S"][n];
+}
 function dayAllowed(t: TemplateRule): boolean {
   if (!t?.dias || !Array.isArray(t.dias) || t.dias.length === 0) return true;
   return t.dias.includes(todayLetter());
 }
-
 function useTemplates() {
-  const [templates, setTemplates] = useLocalStorage<TemplateRule[]>("meco-plantillas", []);
-  const [autoOnImport, setAutoOnImport] = useLocalStorage<boolean>("meco-autoassign-on-import", true);
+  const [templates, setTemplates] = useState<TemplateRule[]>(
+    () => { try { return JSON.parse(localStorage.getItem("meco-plantillas") || "[]"); } catch { return []; } }
+  );
+  const [autoOnImport, setAutoOnImport] = useState<boolean>(
+    () => { try { return JSON.parse(localStorage.getItem("meco-autoassign-on-import") || "true"); } catch { return true; } }
+  );
+  useEffect(()=>{ try { localStorage.setItem("meco-plantillas", JSON.stringify(templates)); } catch {} }, [templates]);
+  useEffect(()=>{ try { localStorage.setItem("meco-autoassign-on-import", JSON.stringify(autoOnImport)); } catch {} }, [autoOnImport]);
   return { templates, setTemplates, autoOnImport, setAutoOnImport };
 }
-
 function suggestMuelleForRow(templates: TemplateRule[], ladoName: string, row: RowData, app: AppState): number | null {
   const destino = (row?.DESTINO || "").toString();
   const candidatos = (templates || [])
@@ -466,8 +454,6 @@ function HeaderCell(props: {
   onDrop: (e: React.DragEvent<HTMLDivElement>) => void;
 }) {
   const stopDragIfDoubleClick = (e: React.MouseEvent) => {
-    // evita arrastre accidental al hacer doble click
-    // (no cambia comportamiento de click simple)
     if ((e as any).detail && (e as any).detail > 1) {
       e.stopPropagation();
       try { e.preventDefault(); } catch {}
@@ -492,7 +478,7 @@ function HeaderCell(props: {
   );
 }
 
-/* ========================= Subcomponentes básicos ========================= */
+/* ========================= Subcomponentes ========================= */
 
 function KV({ label, value, wrap }: { label: string; value?: string; wrap?: boolean }) {
   return (
@@ -526,7 +512,7 @@ function SelectX<T extends string>({ label, value, onChange, options }:{
   );
 }
 
-/* ========================= Tira de avisos (SLA) ========================= */
+/* ========================= Tira de avisos SLA ========================= */
 
 function AlertStrip({ topeCrit, topeWarn, onOpen }:{
   topeCrit: number; topeWarn: number; onOpen: (t: "SLA_TOPE")=>void;
@@ -682,7 +668,7 @@ function useSummaryData(app: AppState) {
 /* ========================= Componente principal ========================= */
 
 export default function MecoDockManager() {
-  const [app, setApp] = useLocalStorage<AppState>("meco-app", {
+  const [app, setApp] = useSharedState<AppState>("meco-app", {
     lados: Object.fromEntries(LADOS.map((n) => [n, { name: n, rows: [] as RowData[] }])) as LadosMap
   });
 
@@ -692,13 +678,12 @@ export default function MecoDockManager() {
   const [dockPanel, setDockPanel] = useState<{open: boolean; dock?: number; lado?: string; rowId?: string}>({ open: false });
 
   const [importInfo, setImportInfo] = useState<any>(null);
-  const [columnOrder, setColumnOrder] = useLocalStorage<string[]>("meco-colorder", DEFAULT_ORDER);
+  const [columnOrder, setColumnOrder] = useColumnOrder();
   const [summary, setSummary] = useState<{open: boolean; type: "OK"|"CARGANDO"|"ANULADO"|"INCIDENCIAS"|"SLA_TOPE"|null}>({ open:false, type:null });
 
   const muPrevRef = useRef<Record<string, string>>({});
   const { templates, setTemplates, autoOnImport, setAutoOnImport } = useTemplates();
 
-  useRealtimeSync(app, (v)=>setApp(v));
   useEffect(()=>{ const t = setInterval(()=>setClock(nowISO()), 1000); return ()=>clearInterval(t); }, []);
 
   const summaryData = useSummaryData(app);
@@ -812,7 +797,6 @@ export default function MecoDockManager() {
               },
             },
           };
-          // Autoasignación por plantillas (solo filas sin muelle)
           if (autoOnImport) {
             const draft: AppState = JSON.parse(JSON.stringify(base));
             applyTemplatesToLado(draft, (x)=>Object.assign(base, x), lado, templates);
@@ -1177,7 +1161,6 @@ function DockRight({ app, docksMap, setDockPanel, dockPanel }:{
             const sev = iconSeverity(info);
             const iconTitle = sev==="crit" ? "SALIDA TOPE rebasada" : "SALIDA TOPE en ≤5 min";
 
-            // Avión (carga aérea) si hay _AIR_ITEMS
             const hasAir = info.state !== "LIBRE" && Array.isArray((info as DockInfoBusy).row._AIR_ITEMS) && (info as DockInfoBusy).row._AIR_ITEMS!.length > 0;
             const airIcon = hasAir ? (
               <span
@@ -1724,3 +1707,4 @@ function TemplatesTab({ templates, setTemplates }:{
     </Card>
   );
 }
+
