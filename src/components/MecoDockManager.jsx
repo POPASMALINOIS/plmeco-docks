@@ -1,4 +1,4 @@
-// MecoDockManager.jsx — Sin botón de SLA Espera (arriba) ni tarjeta de SLA Espera (resumen)
+// MecoDockManager.jsx — PDF export, sin CSV, y sin avisos por llegada tardía (solo SLA Tope)
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -8,10 +8,11 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { Download, FileUp, Plus, Trash2, X, AlertTriangle, GripVertical, RefreshCw, Truck } from "lucide-react";
 import * as XLSX from "xlsx";
 import { motion } from "framer-motion";
+import jsPDF from "jspdf";
+import "jspdf-autotable";
 
 /* ========================= PARÁMETROS SLA ====================== */
-const SLA_WAIT_WARN_MIN = 15;
-const SLA_WAIT_CRIT_MIN = 30;
+// Eliminamos SLA de espera (llegada tardía). Solo usamos SLA_TOPE.
 const SLA_TOPE_WARN_MIN = 15;
 /* ============================================================== */
 
@@ -109,7 +110,6 @@ const HEADER_CELL_CLASS = "bg-slate-50 px-1 py-0.5 border-r border-slate-200 sel
 const HEADER_TEXT_CLASS = "text-[9px] leading-none font-semibold text-muted-foreground uppercase tracking-wide";
 
 /* ==================== Anchos forzados en PX ==================== */
-const TIME_COLS = new Set(["LLEGADA","LLEGADA REAL","SALIDA","SALIDA REAL","SALIDA TOPE"]);
 const PX_TIME = 80;           // LLEGADA y SALIDA
 const PX_TIME_REAL = 100;     // LLEGADA REAL y SALIDA REAL
 const PX_TIME_TOPE = 100;     // SALIDA TOPE
@@ -219,42 +219,27 @@ function checkDockConflict(app,dockValue,currentLado,currentRowId){
 }
 
 /* =============================== SLA helpers =============================== */
-function withDockAssignStamp(prevRow,nextRow){
-  const prevDock=(prevRow?.MUELLE??"").toString().trim();
-  const nextDock=(nextRow?.MUELLE??"").toString().trim();
-  if(nextDock && (!prevDock || prevDock!==nextDock)) return {...nextRow,_ASIG_TS:new Date().toISOString()};
-  return nextRow;
-}
+// ❗️ Eliminamos cualquier cálculo/aviso ligado a llegadas tardías.
+// Solo calculamos SLA de SALIDA TOPE.
 function getSLA(row){
   const now=new Date();
-  let wait={level:null,minutes:0};
-  const muelle=(row?.MUELLE||"").toString().trim();
-  const llegadaReal=(row?.["LLEGADA REAL"]||"").toString().trim();
-  if(muelle && !llegadaReal){
-    let ref=row?._ASIG_TS?new Date(row._ASIG_TS):null;
-    if(!ref && row?.LLEGADA){ const d=parseFlexibleToDate(row.LLEGADA); if(d) ref=d; }
-    if(ref){ const m=minutesDiff(now,ref); wait.minutes=m; if(m>=SLA_WAIT_CRIT_MIN) wait.level="crit"; else if(m>=SLA_WAIT_WARN_MIN) wait.level="warn"; }
-  }
-  let tope={level:null,diff:0};
+  const tope={level:null,diff:0};
   const salidaReal=(row?.["SALIDA REAL"]||"").toString().trim();
   const salidaTope=parseFlexibleToDate(row?.["SALIDA TOPE"]||"");
   if(!salidaReal && salidaTope){
-    const diffMin=minutesDiff(now,salidaTope); tope.diff=diffMin;
-    if(diffMin>0) tope.level="crit"; else if(diffMin>=-SLA_TOPE_WARN_MIN) tope.level="warn";
+    const diffMin=minutesDiff(now,salidaTope);
+    tope.diff=diffMin;
+    if(diffMin>0) tope.level="crit";         // ya superado el tope
+    else if(diffMin>=-SLA_TOPE_WARN_MIN) tope.level="warn"; // cerca del tope
   }
   const parts=[];
-  if(wait.level) parts.push(`Espera en muelle ${wait.minutes} min`);
   if(tope.level==="crit") parts.push(`Salida tope superada (+${tope.diff} min)`);
   else if(tope.level==="warn") parts.push(`Salida tope próxima (${Math.abs(tope.diff)} min)`);
-  return {wait,tope,tip:parts.join(" · ")};
+  return {wait:{level:null,minutes:0}, tope, tip:parts.join(" · ")};
 }
 function slaOutlineClasses(sla){
-  const levels=["crit","warn"];
-  for(const lv of levels){
-    if(sla.tope.level===lv || sla.wait.level===lv){
-      return lv==="crit" ? "outline outline-2 outline-red-500" : "outline outline-2 outline-amber-400";
-    }
-  }
+  if(sla.tope.level==="crit") return "outline outline-2 outline-red-500";
+  if(sla.tope.level==="warn") return "outline outline-2 outline-amber-400";
   return "";
 }
 
@@ -299,11 +284,10 @@ export default function MecoDockManager(){
       }
     }
     const is=(v,x)=> (String(v||"").toUpperCase()===x);
-    let waitWarn=0, waitCrit=0, topeWarn=0, topeCrit=0;
-    const waitRows=[], topeRows=[];
+    let topeWarn=0, topeCrit=0;
+    const topeRows=[];
     all.forEach(r=>{
       const sla=getSLA(r);
-      if(sla.wait.level){ waitRows.push({...r,_sla:sla}); if(sla.wait.level==="crit") waitCrit++; else waitWarn++; }
       if(sla.tope.level){ topeRows.push({...r,_sla:sla}); if(sla.tope.level==="crit") topeCrit++; else topeWarn++; }
     });
     return {
@@ -312,7 +296,7 @@ export default function MecoDockManager(){
       ANULADO: all.filter(r=>is(r.ESTADO,"ANULADO")),
       INCIDENCIAS: all.filter(r=>(r?.INCIDENCIAS||"").trim()!==""),
       total: all.length,
-      SLA_WAIT: { warn: waitWarn, crit: waitCrit, rows: waitRows },
+      // Sin SLA_WAIT
       SLA_TOPE: { warn: topeWarn, crit: topeCrit, rows: topeRows },
     };
   },[app]);
@@ -486,7 +470,7 @@ export default function MecoDockManager(){
                     onClear={()=>clearLado(active)}
                     filterEstado={filterEstado}
                     setFilterEstado={setFilterEstado}
-                    onExportCSV={()=>exportCSV(active,app,columnOrder)}
+                    onExportPDF={()=>exportPDF(active,app,columnOrder)}
                     onExportXLSX={()=>exportXLSX(active,app,columnOrder)}
                     onResetCache={()=>{ try{localStorage.removeItem("meco-app"); localStorage.removeItem("meco-colorder");}catch(e){} window.location.reload(); }}
                     activeLadoName={active}
@@ -522,9 +506,9 @@ export default function MecoDockManager(){
                           <div>
                             {visible.map((row)=>{
                               const estado=(row?.ESTADO||"").toString();
-                              const sla=getSLA(row);
+                              const sla=getSLA(row); // solo tope
                               const outline=slaOutlineClasses(sla);
-                              const hasSLA=sla.wait.level||sla.tope.level;
+                              const hasSLA=!!sla.tope.level;
                               return (
                                 <Tooltip key={row.id}>
                                   <TooltipTrigger asChild>
@@ -563,7 +547,7 @@ export default function MecoDockManager(){
                                         );
                                       })}
                                       <div className="p-0.5 flex items-center justify-center">
-                                        {hasSLA && <AlertTriangle className={`w-4 h-4 mr-0.5 ${sla.tope.level==="crit"||sla.wait.level==="crit"?"text-red-600":"text-amber-500"}`} />}
+                                        {hasSLA && <AlertTriangle className={`w-4 h-4 mr-0.5 ${sla.tope.level==="crit"?"text-red-600":"text-amber-500"}`} />}
                                         <Button size="icon" variant="ghost" className="h-7 w-7" onClick={()=>removeRow(n,row.id)} title="Eliminar">
                                           <X className="w-4 h-4" />
                                         </Button>
@@ -808,8 +792,7 @@ function SelectX({label,value,onChange,options}){ return (
 );}
 
 /* ===================== LÍNEA SUPERIOR DE AVISOS (SLA) ===================== */
-function AlertStrip({ /*waitCrit, waitWarn,*/ topeCrit, topeWarn, onOpen }) {
-  // Solo mostramos SLA Tope; Espera eliminado
+function AlertStrip({ topeCrit, topeWarn, onOpen }) {
   const hasAnyTope = (topeCrit + topeWarn) > 0;
 
   return (
@@ -842,7 +825,6 @@ function AlertStrip({ /*waitCrit, waitWarn,*/ topeCrit, topeWarn, onOpen }) {
 
 /* ==================== Barra de resumen (sin SLA Espera) =================== */
 function SummaryBar({data,onOpen}){
-  // Eliminamos la tarjeta SLA_WAIT
   const cards = [
     { key:"OK", title:"OK", count:data.OK.length, color:"bg-emerald-600", sub:"Camiones en OK" },
     { key:"CARGANDO", title:"Cargando", count:data.CARGANDO.length, color:"bg-amber-500", sub:"Camiones cargando" },
@@ -880,7 +862,6 @@ function SummaryModal({open,type,data,onClose}){
   else if(type==="CARGANDO"){ title="Resumen · Cargando"; rows=data.CARGANDO; }
   else if(type==="ANULADO"){ title="Resumen · Anulado"; rows=data.ANULADO; }
   else if(type==="INCIDENCIAS"){ title="Resumen · Incidencias"; rows=data.INCIDENCIAS; }
-  else if(type==="SLA_WAIT"){ title="Resumen · SLA Espera"; rows=data.SLA_WAIT.rows; }
   else if(type==="SLA_TOPE"){ title="Resumen · SLA Tope"; rows=data.SLA_TOPE.rows; }
   return (
     <>
@@ -892,7 +873,7 @@ function SummaryModal({open,type,data,onClose}){
         </div>
         <div className="p-3 max-h-[75vh] overflow-auto">
           <div className="grid grid-cols-[90px_140px_minmax(140px,1fr)_80px_120px_120px_minmax(160px,1fr)] gap-2 text-[11px] font-semibold text-muted-foreground uppercase tracking-wide mb-2">
-            <div>Lado</div><div>Matrícula</div><div>Destino</div><div>Muelle</div><div>Llegada real</div><div>Salida real</div><div>{type==="INCIDENCIAS"?"Incidencias": type?.startsWith("SLA_")?"Motivo": "Estado"}</div>
+            <div>Lado</div><div>Matrícula</div><div>Destino</div><div>Muelle</div><div>Llegada real</div><div>Salida real</div><div>{type==="INCIDENCIAS"?"Incidencias":"Estado / Motivo"}</div>
           </div>
           <div className="divide-y">
             {rows.map((r)=>(
@@ -903,12 +884,7 @@ function SummaryModal({open,type,data,onClose}){
                 <div>{r.MUELLE||"—"}</div>
                 <div>{r["LLEGADA REAL"]||"—"}</div>
                 <div>{r["SALIDA REAL"]||"—"}</div>
-                <div>
-                  {type==="INCIDENCIAS" ? (r.INCIDENCIAS||"—")
-                   : type==="SLA_WAIT"  ? (r._sla?.tip || "Espera en muelle")
-                   : type==="SLA_TOPE"  ? (r._sla?.tip || "Salida tope")
-                   : (r.ESTADO||"—")}
-                </div>
+                <div>{r._sla?.tip || r.ESTADO || r.INCIDENCIAS || "—"}</div>
               </div>
             ))}
             {rows.length===0 && <div className="text-sm text-muted-foreground py-6 text-center">No hay elementos para mostrar.</div>}
@@ -922,7 +898,7 @@ function SummaryModal({open,type,data,onClose}){
 /* ============================ Toolbar & Export ============================ */
 function ToolbarX({
   onImport,onAddRow,onClear,filterEstado,setFilterEstado,
-  onExportCSV,onExportXLSX,onResetCache,
+  onExportPDF,onExportXLSX,onResetCache,
   activeLadoName, activeRowsCount
 }){
   const fileRef=useRef(null);
@@ -962,8 +938,9 @@ function ToolbarX({
       <Button size="sm" variant="secondary" onClick={()=>fileRef.current && fileRef.current.click()}>
         <FileUp className="mr-2 h-4 w-4" /> Importar Excel
       </Button>
-      <Button size="sm" onClick={onExportCSV}>
-        <Download className="mr-2 h-4 w-4" /> Exportar CSV
+      {/* CSV eliminado */}
+      <Button size="sm" onClick={onExportPDF}>
+        <Download className="mr-2 h-4 w-4" /> Exportar PDF
       </Button>
       <Button size="sm" onClick={onExportXLSX} variant="outline">
         <Download className="mr-2 h-4 w-4" /> Exportar Excel (.xlsx)
@@ -993,24 +970,39 @@ function ToolbarX({
   );
 }
 
-function exportCSV(lado,app,columnOrder){
-  const headers=columnOrder, rows=(app?.lados?.[lado]?.rows)||[];
-  const SEP=";"; const esc=(val)=>{ const s=(val??"").toString().replace(/\r?\n/g," "); const doubled=s.replace(/"/g,'""'); return `"${doubled}"`; };
-  const headerLine=headers.map(h=>esc(h)).join(SEP);
-  const dataLines=rows.map(r=>headers.map(h=>esc(r?.[h])).join(SEP));
-  const content="\uFEFF"+"sep="+SEP+"\r\n"+[headerLine,...dataLines].join("\r\n");
-  const blob=new Blob([content],{type:"text/csv;charset=utf-8;"}); const url=URL.createObjectURL(blob);
-  const a=document.createElement("a"); a.href=url; a.download=`${lado.replace(/\s+/g,"_")}.csv`; a.click(); URL.revokeObjectURL(url);
+function exportPDF(lado,app,columnOrder){
+  const rows = (app?.lados?.[lado]?.rows) || [];
+  const headers = columnOrder;
+  const body = rows.map(r => headers.map(h => (r?.[h] ?? "").toString()));
+
+  const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "A4" });
+
+  // Título
+  const ts = new Date();
+  const pad2 = (n)=>String(n).padStart(2,"0");
+  const title = `Operativa ${lado} · ${ts.getFullYear()}-${pad2(ts.getMonth()+1)}-${pad2(ts.getDate())} ${pad2(ts.getHours())}:${pad2(ts.getMinutes())}`;
+
+  doc.setFontSize(12);
+  doc.text(title, 40, 32);
+
+  doc.autoTable({
+    startY: 48,
+    head: [headers],
+    body,
+    styles: { fontSize: 8, cellPadding: 3, overflow: "linebreak" },
+    headStyles: { fillColor: [240, 244, 248], textColor: 20, fontStyle: "bold" },
+    alternateRowStyles: { fillColor: [250, 250, 250] },
+    margin: { left: 40, right: 40 },
+  });
+
+  doc.save(`${lado.replace(/\s+/g,"_")}.pdf`);
 }
+
 function exportXLSX(lado,app,columnOrder){
   const headers=columnOrder, rows=(app?.lados?.[lado]?.rows)||[];
   const data=rows.map(r=>{ const o={}; headers.forEach(h=>{o[h]=r?.[h]??""}); return o; });
   const ws=XLSX.utils.json_to_sheet(data,{header:headers,skipHeader:false});
-  const colWidths=headers.map(h=>{
-    if (h in FIXED_PX) return { wpx: FIXED_PX[h] };
-    if (TIME_COLS.has(h)) return { wpx: 140 };
-    return { wpx: 140 };
-  });
+  const colWidths=headers.map(h=> (h in FIXED_PX) ? { wpx: FIXED_PX[h] } : { wpx: 140 });
   ws["!cols"]=colWidths;
   const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,lado.replace(/[\\/?*[\]]/g,"_").slice(0,31));
   XLSX.writeFile(wb,`${lado.replace(/\s+/g,"_")}.xlsx`,{bookType:"xlsx",compression:true});
