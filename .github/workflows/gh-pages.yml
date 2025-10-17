@@ -1,4 +1,4 @@
-name: Build and Deploy (Pages)
+name: Deploy to GitHub Pages
 
 on:
   push:
@@ -10,50 +10,33 @@ permissions:
   pages: write
   id-token: write
 
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout repo
         uses: actions/checkout@v4
 
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
-          # Sin cache porque no hay lockfile en el repo
+          node-version: '20'
+          cache: 'npm'
 
-      - name: Configure npm retries/timeouts (npm v10 compatible)
-        run: |
-          npm config set registry https://registry.npmjs.org/
-          npm config set fetch-retries 5
-          npm config set fetch-retry-mintimeout 20000
-          npm config set fetch-retry-maxtimeout 600000
-          npm config set fetch-timeout 600000
-          # ⛔️ OJO: no usar "network-timeout" (no existe en npm)
+      - name: Install deps (clean)
+        run: npm ci --no-audit --no-fund
 
-      - name: Install deps (retry up to 5) — npm install
-        run: |
-          set -e
-          for i in 1 2 3 4 5; do
-            echo "Attempt $i/5: npm install"
-            if npm install --no-audit --fund=false; then
-              break
-            fi
-            if [ $i -eq 5 ]; then
-              echo "npm install failed after 5 attempts"; exit 1
-            fi
-            echo "npm install failed (attempt $i). Sleeping 15s…"
-            sleep 15
-          done
-
-      - name: Build (Vite)
+      - name: Build
         run: npm run build
 
-      - name: Upload artifact to Pages (dist/)
+      - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: ./dist
+          path: dist
 
   deploy:
     needs: build
