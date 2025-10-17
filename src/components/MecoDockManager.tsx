@@ -303,14 +303,14 @@ function Toolbar({
   onClear,
   filterEstado,
   setFilterEstado,
-  onExport,
+  onExportXLSX,
 }: {
   onImport: (file: File) => void;
   onAddRow: () => void;
   onClear: () => void;
   filterEstado: string;
   setFilterEstado: (s: string) => void;
-  onExport: () => void;
+  onExportXLSX: () => void;
 }) {
   const fileRef = useRef<HTMLInputElement | null>(null);
   return (
@@ -329,8 +329,8 @@ function Toolbar({
       <Button size="sm" variant="secondary" onClick={() => fileRef.current?.click()}>
         <FileUp className="mr-2 h-4 w-4" /> Importar Excel
       </Button>
-      <Button size="sm" onClick={onExport}>
-        <Download className="mr-2 h-4 w-4" /> Exportar CSV
+      <Button size="sm" onClick={onExportXLSX}>
+        <Download className="mr-2 h-4 w-4" /> Exportar Excel (.xlsx)
       </Button>
       <Button size="sm" variant="outline" onClick={onAddRow}>
         <Plus className="mr-2 h-4 w-4" /> Nueva fila
@@ -438,6 +438,43 @@ export default function MecoDockManager() {
     reader.readAsArrayBuffer(file);
   }
 
+  // ====== EXPORTACIÓN XLSX (con autoajuste de columnas) ======
+  function exportXLSX(lado: string) {
+    try {
+      const headers = ALL_HEADERS;
+      const rows = app.lados[lado].rows || [];
+
+      const aoa: any[][] = [
+        headers,
+        ...rows.map((r: any) => headers.map(h => r?.[h] ?? "")),
+      ];
+
+      const ws = XLSX.utils.aoa_to_sheet(aoa);
+
+      // calcular anchos por columna en caracteres (wch)
+      const colWidths = headers.map((h) => {
+        let maxLen = String(h ?? "").length;
+        for (let i = 0; i < rows.length; i++) {
+          const raw = rows[i]?.[h];
+          const cellStr = (raw === null || raw === undefined) ? "" : String(raw).replace(/\r?\n+/g, " ").trim();
+          if (cellStr.length > maxLen) maxLen = cellStr.length;
+        }
+        const padded = Math.min(maxLen + 4, 60); // padding + tope
+        return { wch: padded };
+      });
+
+      (ws as any)['!cols'] = colWidths;
+
+      const wb = XLSX.utils.book_new();
+      const wsName = lado.replace(/[\\\/\?\*\[\]]/g, "_").slice(0, 31);
+      XLSX.utils.book_append_sheet(wb, ws, wsName);
+      XLSX.writeFile(wb, `${wsName}.xlsx`);
+    } catch (err) {
+      console.error(err);
+      alert("No se pudo exportar el Excel.");
+    }
+  }
+
   function exportCSV(lado: string) {
     const rows = app.lados[lado].rows;
     const headers = ALL_HEADERS;
@@ -497,7 +534,7 @@ export default function MecoDockManager() {
                     onClear={() => clearLado(active)}
                     filterEstado={filterEstado}
                     setFilterEstado={setFilterEstado}
-                    onExport={() => exportCSV(active)}
+                    onExportXLSX={() => exportXLSX(active)}
                   />
                 </div>
 
