@@ -1,4 +1,5 @@
-// MecoDockManager.jsx — sin PDF, sin CSV, con aviso (triángulo) en muelles si SALIDA TOPE ≤5 min o rebasada
+// MecoDockManager.jsx — sin PDF/CSV, sin avisos SLA en tabla central (sin líneas ni iconos),
+// con warning en muelles (drawer lateral) si SALIDA TOPE ≤5 min o rebasada.
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -10,8 +11,7 @@ import * as XLSX from "xlsx";
 import { motion } from "framer-motion";
 
 /* ========================= PARÁMETROS SLA ====================== */
-// Solo SLA de SALIDA TOPE en la app.
-// Umbral para barra superior:
+// Umbral para barra superior (interno, ya no pinta líneas en tabla):
 const SLA_TOPE_WARN_MIN = 15;
 // Umbral para ICONO en los muelles del panel lateral:
 const SLA_TOPE_ICON_PREMIN = 5;
@@ -54,7 +54,7 @@ const DEFAULT_ORDER = [
 ];
 const EXPECTED_KEYS = [...new Set([...BASE_HEADERS, ...EXTRA_HEADERS])];
 
-/* === Colorear solo hasta "SALIDA TOPE" (incluida) === */
+/* === Colorear solo hasta "SALIDA TOPE" (incluida) por ESTADO === */
 const COLOR_UP_TO = new Set([
   "TRANSPORTISTA","MATRICULA","DESTINO","MUELLE","PRECINTO",
   "LLEGADA","LLEGADA REAL","SALIDA","SALIDA REAL","SALIDA TOPE",
@@ -189,7 +189,7 @@ function deriveDocks(lados){
 function dockColor(state){ if(state==="LIBRE")return "bg-emerald-500"; if(state==="ESPERA")return "bg-amber-500"; return "bg-red-600"; }
 function estadoBadgeColor(estado){ if(estado==="ANULADO")return "bg-red-600"; if(estado==="CARGANDO")return "bg-amber-500"; if(estado==="OK")return "bg-emerald-600"; return "bg-slate-400"; }
 
-/* Tonos suaves por celda (hasta "SALIDA TOPE") */
+/* Tonos suaves por celda (hasta "SALIDA TOPE") según ESTADO */
 function cellBgByEstado(estado){
   if(estado==="ANULADO") return "bg-rose-50";
   if(estado==="CARGANDO") return "bg-amber-50";
@@ -220,7 +220,7 @@ function checkDockConflict(app,dockValue,currentLado,currentRowId){
 }
 
 /* =============================== SLA helpers =============================== */
-// Solo SLA de SALIDA TOPE.
+// Solo SLA de SALIDA TOPE (para resúmenes y drawer lateral; no colorea la tabla central).
 function getSLA(row){
   const now=new Date();
   const tope={level:null,diff:0};
@@ -230,17 +230,12 @@ function getSLA(row){
     const diffMin=minutesDiff(now,salidaTope);
     tope.diff=diffMin;
     if(diffMin>0) tope.level="crit";         // ya superado el tope
-    else if(diffMin>=-SLA_TOPE_WARN_MIN) tope.level="warn"; // cerca del tope (umbral general 15')
+    else if(diffMin>=-SLA_TOPE_WARN_MIN) tope.level="warn"; // cerca del tope
   }
   const parts=[];
   if(tope.level==="crit") parts.push(`Salida tope superada (+${tope.diff} min)`);
   else if(tope.level==="warn") parts.push(`Salida tope próxima (${Math.abs(tope.diff)} min)`);
-  return {wait:{level:null,minutes:0}, tope, tip:parts.join(" · ")};
-}
-function slaOutlineClasses(sla){
-  if(sla.tope.level==="crit") return "outline outline-2 outline-red-500";
-  if(sla.tope.level==="warn") return "outline outline-2 outline-amber-400";
-  return "";
+  return {tope, tip:parts.join(" · ")};
 }
 
 /* ============================== Componente ================================ */
@@ -506,60 +501,51 @@ export default function MecoDockManager(){
                             </div>
                           </div>
 
-                          {/* Filas */}
+                          {/* Filas (sin avisos SLA visuales) */}
                           <div>
                             {visible.map((row)=>{
                               const estado=(row?.ESTADO||"").toString();
-                              const sla=getSLA(row); // solo tope
-                              const outline=slaOutlineClasses(sla);
-                              const hasSLA=!!sla.tope.level;
                               return (
-                                <Tooltip key={row.id}>
-                                  <TooltipTrigger asChild>
-                                    <div className={`grid border-t ${rowAccentBorder(estado)} border-slate-200 ${outline}`} style={{gridTemplateColumns:gridTemplate, minWidth: "100%"}}>
-                                      {columnOrder.map((h)=>{
-                                        const isEstado=h==="ESTADO", isInc=h==="INCIDENCIAS", isMuelle=h==="MUELLE";
-                                        const bgClass = COLOR_UP_TO.has(h) ? cellBgByEstado(estado) : "";
-                                        return (
-                                          <div key={h} className={`p-1 border-r border-slate-100/60 flex items-center ${bgClass}`}>
-                                            {isEstado ? (
-                                              <select className="h-8 w-full border rounded px-2 bg-transparent text-sm" value={(row?.ESTADO??"").toString()} onChange={(e)=>setField(n,row.id,"ESTADO",e.target.value)}>
-                                                <option value="">Seleccionar</option>
-                                                {CAMION_ESTADOS.map(opt=><option key={opt} value={opt}>{opt}</option>)}
-                                              </select>
-                                            ) : isInc ? (
-                                              <select className="h-8 w-full border rounded px-2 bg-transparent text-sm" value={(row?.INCIDENCIAS??"").toString()} onChange={(e)=>setField(n,row.id,"INCIDENCIAS",e.target.value)}>
-                                                <option value="">Seleccionar</option>
-                                                {INCIDENTES.map(opt=><option key={opt} value={opt}>{opt}</option>)}
-                                              </select>
-                                            ) : isMuelle ? (
-                                              <input
-                                                className="h-8 w-full border rounded px-2 bg-transparent text-sm"
-                                                value={(row?.[h] ?? "").toString()}
-                                                onFocus={()=>{ muPrevRef.current[row.id] = (row?.[h] ?? "").toString(); }}
-                                                onChange={(e)=> updateRowDirect(n, row.id, { MUELLE: e.target.value })}
-                                                onBlur={(e)=> commitDockValue(n, row.id, e.target.value)}
-                                                placeholder="nº muelle"
-                                              />
-                                            ) : (
-                                              <input className="h-8 w-full border rounded px-2 bg-transparent text-sm"
-                                                value={(row?.[h]??"").toString()}
-                                                onChange={(e)=>setField(n,row.id,h,e.target.value)}
-                                              />
-                                            )}
-                                          </div>
-                                        );
-                                      })}
-                                      <div className="p-0.5 flex items-center justify-center">
-                                        {hasSLA && <AlertTriangle className={`w-4 h-4 mr-0.5 ${sla.tope.level==="crit"?"text-red-600":"text-amber-500"}`} />}
-                                        <Button size="icon" variant="ghost" className="h-7 w-7" onClick={()=>removeRow(n,row.id)} title="Eliminar">
-                                          <X className="w-4 h-4" />
-                                        </Button>
+                                <div key={row.id} className={`grid border-t ${rowAccentBorder(estado)} border-slate-200`} style={{gridTemplateColumns:gridTemplate, minWidth: "100%"}}>
+                                  {columnOrder.map((h)=>{
+                                    const isEstado=h==="ESTADO", isInc=h==="INCIDENCIAS", isMuelle=h==="MUELLE";
+                                    const bgClass = COLOR_UP_TO.has(h) ? cellBgByEstado(estado) : "";
+                                    return (
+                                      <div key={h} className={`p-1 border-r border-slate-100/60 flex items-center ${bgClass}`}>
+                                        {isEstado ? (
+                                          <select className="h-8 w-full border rounded px-2 bg-transparent text-sm" value={(row?.ESTADO??"").toString()} onChange={(e)=>setField(n,row.id,"ESTADO",e.target.value)}>
+                                            <option value="">Seleccionar</option>
+                                            {CAMION_ESTADOS.map(opt=><option key={opt} value={opt}>{opt}</option>)}
+                                          </select>
+                                        ) : isInc ? (
+                                          <select className="h-8 w-full border rounded px-2 bg-transparent text-sm" value={(row?.INCIDENCIAS??"").toString()} onChange={(e)=>setField(n,row.id,"INCIDENCIAS",e.target.value)}>
+                                            <option value="">Seleccionar</option>
+                                            {INCIDENTES.map(opt=><option key={opt} value={opt}>{opt}</option>)}
+                                          </select>
+                                        ) : isMuelle ? (
+                                          <input
+                                            className="h-8 w-full border rounded px-2 bg-transparent text-sm"
+                                            value={(row?.[h] ?? "").toString()}
+                                            onFocus={()=>{ muPrevRef.current[row.id] = (row?.[h] ?? "").toString(); }}
+                                            onChange={(e)=> updateRowDirect(n, row.id, { MUELLE: e.target.value })}
+                                            onBlur={(e)=> commitDockValue(n, row.id, e.target.value)}
+                                            placeholder="nº muelle"
+                                          />
+                                        ) : (
+                                          <input className="h-8 w-full border rounded px-2 bg-transparent text-sm"
+                                            value={(row?.[h]??"").toString()}
+                                            onChange={(e)=>setField(n,row.id,h,e.target.value)}
+                                          />
+                                        )}
                                       </div>
-                                    </div>
-                                  </TooltipTrigger>
-                                  {hasSLA && <TooltipContent><p className="max-w-sm text-sm">{sla.tip}</p></TooltipContent>}
-                                </Tooltip>
+                                    );
+                                  })}
+                                  <div className="p-0.5 flex items-center justify-center">
+                                    <Button size="icon" variant="ghost" className="h-7 w-7" onClick={()=>removeRow(n,row.id)} title="Eliminar">
+                                      <X className="w-4 h-4" />
+                                    </Button>
+                                  </div>
+                                </div>
                               );
                             })}
                           </div>
@@ -603,7 +589,7 @@ export default function MecoDockManager(){
 function DockRight({app,setDockPanel,dockPanel}){
   const docks=useMemo(()=>deriveDocks(app?.lados||{}),[app]);
 
-  // ⚠️ Calcula si un muelle debe mostrar el icono de aviso (≤5 min o rebasado SALIDA TOPE sin SALIDA REAL)
+  // ⚠️ Icono aviso (≤5 min o rebasado SALIDA TOPE sin SALIDA REAL)
   function shouldShowTopeIcon(info){
     const row = info?.row;
     if(!row) return false;
@@ -650,7 +636,6 @@ function DockRight({app,setDockPanel,dockPanel}){
               ? `${label} • ${info.row.MATRICULA||"?"} • ${info.row.DESTINO||"?"} • ${(info.row.ESTADO||"") || "—"}`
               : `${label} • Libre`;
 
-            // Decidir icono
             const showIcon = shouldShowTopeIcon(info);
             const sev = iconSeverity(info); // "crit" | "warn" | null
             const iconTitle = sev==="crit" ? "SALIDA TOPE rebasada" : "SALIDA TOPE en ≤5 min";
@@ -997,7 +982,6 @@ function ToolbarX({
       <Button size="sm" variant="secondary" onClick={()=>fileRef.current && fileRef.current.click()}>
         <FileUp className="mr-2 h-4 w-4" /> Importar Excel
       </Button>
-      {/* CSV eliminado · PDF eliminado */}
       <Button size="sm" onClick={onExportXLSX} variant="outline">
         <Download className="mr-2 h-4 w-4" /> Exportar Excel (.xlsx)
       </Button>
