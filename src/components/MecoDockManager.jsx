@@ -1,6 +1,6 @@
 // src/components/MecoDockManager.jsx
 // App de gestión de muelles con plantillas, validación, panel lateral, etc.
-// + “Carga aérea” (destinos/m³/bx con totales) AHORA EN TODOS LOS MUELLES
+// Indicador de carga aérea: icono de avión en el botón del muelle si hay _AIR_ITEMS
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -8,7 +8,10 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { Download, FileUp, Plus, Trash2, X, AlertTriangle, GripVertical, RefreshCw, Truck, BookmarkPlus, Upload, Save } from "lucide-react";
+import {
+  Download, FileUp, Plus, Trash2, X, AlertTriangle, GripVertical, RefreshCw,
+  Truck, BookmarkPlus, Upload, Save, Plane
+} from "lucide-react";
 import * as XLSX from "xlsx";
 import { motion } from "framer-motion";
 
@@ -307,7 +310,7 @@ function applyTemplatesToLado(app, setApp, ladoName, templates){
   setApp(draft);
 }
 
-/* ============================== Componente ================================ */
+/* ==================== Componente ================================ */
 export default function MecoDockManager(){
   const [app,setApp]=useLocalStorage("meco-app",{ lados:Object.fromEntries(LADOS.map((n)=>[n,{name:n,rows:[]}])) });
   const [active,setActive]=useState(LADOS[0]);
@@ -649,7 +652,7 @@ export default function MecoDockManager(){
           <DockRight app={app} setDockPanel={setDockPanel} dockPanel={dockPanel} />
         </div>
 
-        {/* Drawer muelles con “Carga aérea” en TODOS los muelles */}
+        {/* Drawer muelles con “Carga aérea” en TODOS los muelles (edición) */}
         <DockDrawer
           app={app}
           dockPanel={dockPanel}
@@ -692,6 +695,7 @@ export default function MecoDockManager(){
 /* ============================= Panel derecha ============================== */
 function DockRight({app,setDockPanel,dockPanel}){
   const docks=useMemo(()=>deriveDocks(app?.lados||{}),[app]);
+
   function shouldShowTopeIcon(info){
     const row = info?.row;
     if(!row) return false;
@@ -714,6 +718,7 @@ function DockRight({app,setDockPanel,dockPanel}){
     if(diff >= -SLA_TOPE_ICON_PREMIN) return "warn";
     return null;
   }
+
   const legend=(
     <div className="flex items-center gap-3 text-[11px] text-muted-foreground">
       <div className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded bg-emerald-500" /> Libre</div>
@@ -721,6 +726,7 @@ function DockRight({app,setDockPanel,dockPanel}){
       <div className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded bg-red-600" /> Ocupado</div>
     </div>
   );
+
   return (
     <Card className="w-[290px]">
       <CardHeader className="pb-2 flex flex-col gap-2">
@@ -741,6 +747,17 @@ function DockRight({app,setDockPanel,dockPanel}){
             const sev = iconSeverity(info);
             const iconTitle = sev==="crit" ? "SALIDA TOPE rebasada" : "SALIDA TOPE en ≤5 min";
 
+            // === Indicador de CARGA AÉREA (icono avión) ===
+            const hasAir = !!(info?.row && Array.isArray(info.row._AIR_ITEMS) && info.row._AIR_ITEMS.length > 0);
+            const airIcon = hasAir ? (
+              <span
+                title="Carga aérea en este muelle"
+                className="absolute -top-1 -left-1 inline-flex items-center justify-center w-5 h-5 rounded-full border bg-white shadow border-sky-400"
+              >
+                <Plane className="w-3.5 h-3.5 text-sky-600" />
+              </span>
+            ) : null;
+
             const btn=(
               <motion.button
                 whileTap={{scale:0.96}}
@@ -758,6 +775,7 @@ function DockRight({app,setDockPanel,dockPanel}){
                     <AlertTriangle className={`w-3.5 h-3.5 ${sev==="crit" ? "text-red-600" : "text-amber-500"}`} />
                   </span>
                 )}
+                {airIcon}
               </motion.button>
             );
 
@@ -803,7 +821,7 @@ function DockDrawer({app,dockPanel,setDockPanel,updateRowDirect,commitDockValue,
     setField(lado, row.id, "SALIDA REAL", now);
   }
 
-  // ====== AIR ITEMS helpers (ahora en TODOS los muelles)
+  // ====== AIR ITEMS helpers (en TODOS los muelles)
   function airItems(rowObj){
     const arr = rowObj?._AIR_ITEMS;
     return Array.isArray(arr) ? arr : [];
@@ -920,7 +938,7 @@ function DockDrawer({app,dockPanel,setDockPanel,updateRowDirect,commitDockValue,
               <div>
                 <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide leading-tight">Observaciones</div>
                 <textarea
-                  className="min-h-[90px] w-full border rounded px-2 py-1 bg-white text-sm"
+                  className="min-h:[90px] w-full border rounded px-2 py-1 bg-white text-sm"
                   value={(row.OBSERVACIONES??"").toString()}
                   onChange={(e)=>setField(lado,row.id,"OBSERVACIONES",e.target.value)}
                   placeholder="Añade notas"
@@ -1378,7 +1396,7 @@ function TemplatesTab({templates, setTemplates}){
                   </label>
                 </div>
                 <div>
-                  <select className="h-8 w-full border rounded px-2 bg-white text-sm" value={t.lado||"Todos"} onChange={(e)=>updateTemplate(t.id,{lado:e.target.value})}>
+                  <select className="h-8 w-full border rounded px-2 bg-white text-sm" value={t.lado|| "Todos"} onChange={(e)=>updateTemplate(t.id,{lado:e.target.value})}>
                     <option value="Todos">Todos</option>
                     {LADOS.map(l=> <option key={l} value={l}>{l}</option>)}
                   </select>
