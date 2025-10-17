@@ -2,74 +2,82 @@ import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import { createServer } from 'http';
-import { Server as SocketIOServer } from 'socket.io';
+import { Server } from 'socket.io';
 
-const PORT = process.env.PORT || 4000;
-const TOKEN = process.env.TOKEN || '';
-const CORS_ORIGINS = (process.env.CORS_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean);
+/* ========= Config ========= */
+const PORT = Number(process.env.PORT || 4000);
+const TOKEN = (process.env.TOKEN || '').trim();
+const CORS_ORIGIN = process.env.CORS_ORIGIN || '*';
 
-const app = express();
-app.use(express.json({ limit: '5mb' }));
-app.use(cors({
-  origin: (origin, cb) => {
-    if (!origin) return cb(null, true);
-    if (CORS_ORIGINS.length === 0 || CORS_ORIGINS.includes(origin)) return cb(null, true);
-    return cb(new Error('CORS not allowed'), false);
-  },
-  credentials: true
-}));
-
-let appState = { lados: {} };
-
-function checkAuth(req, res, next) {
-  const auth = req.headers['authorization'] || '';
-  const ok = auth.startsWith('Bearer ') && auth.slice(7) === TOKEN;
-  if (!ok) return res.status(401).json({ error: 'Unauthorized' });
-  next();
+if (!TOKEN) {
+  console.error('[FATAL] Debes definir TOKEN en backend/.env');
+  process.exit(1);
 }
 
-app.get('/state', checkAuth, (req, res) => res.json(appState));
-app.put('/state', checkAuth, (req, res) => {
-  if (!req.body || typeof req.body !== 'object') return res.status(400).json({ error: 'invalid body' });
-  appState = req.body;
-  io.emit('state:replace', appState);
-  res.json({ ok: true });
-});
+/* ========= App/HTTP ========= */
+const app = express();
+app.use(cors({ origin: CORS_ORIGIN }));
+app.get('/health', (_req, res) => res.json({ ok: true, ts: new Date().toISOString() }));
+app.get('/', (_req, res) => res.type('text/plain').send('PLMECO Sync Backend OK'));
 
+/* ========= Socket.IO ========= */
 const httpServer = createServer(app);
-const io = new SocketIOServer(httpServer, {
-  cors: { origin: CORS_ORIGINS.length ? CORS_ORIGINS : true, credentials: true }
+const io = new Server(httpServer, {
+  transports: ['websocket'],
+  cors: { origin: CORS_ORIGIN }
 });
 
-io.use((socket, next) => {
-  const token = socket.handshake.auth?.token || socket.handshake.query?.token;
-  if (TOKEN && token !== TOKEN) return next(new Error('Unauthorized'));
-  next();
-});
+/** Estado compartido en memoria (estructura libre, el frontend manda el shape) */
+let STATE = {
+  lados: {} // lo rellenará el primer cliente; luego se sincroniza entre todos
+};
 
-io.on('connection', (socket) => {
-  socket.emit('state:init', appState);
-  socket.on('state:patch', (delta) => {
-    if (!delta || typeof delta !== 'object') return;
-    appState = deepMerge(appState, delta);
-    socket.broadcast.emit('state:patch', delta);
-  });
-  socket.on('state:replace', (nextState) => {
-    if (!nextState || typeof nextState !== 'object') return;
-    appState = nextState;
-    socket.broadcast.emit('state:replace', appState);
-  });
-});
-
+/** Fusión profunda simple (arrays se reemplazan) */
 function deepMerge(base, delta) {
   if (Array.isArray(base) && Array.isArray(delta)) return delta.slice();
-  if (isObj(base) && isObj(delta)) {
+  if (base && typeof base === 'object' && !Array.isArray(base)
+   && delta && typeof delta === 'object' && !Array.isArray(delta)) {
     const out = { ...base };
     for (const k of Object.keys(delta)) out[k] = deepMerge(base[k], delta[k]);
     return out;
   }
   return delta;
 }
-function isObj(x) { return x && typeof x === 'object' && !Array.isArray(x); }
 
-httpServer.listen(PORT, () => console.log(`Backend realtime en :${PORT}`));
+io.use((socket, next) => {
+  try {
+    const token = (socket.handshake.auth && socket.handshake.auth.token) ? String(socket.handshake.auth.token) : '';
+    if (!token || token !== TOKEN) return next(new Error('UNAUTHORIZED'));
+    return next();
+  } catch (e) {
+    return next(new Error('UNAUTHORIZED'));
+  }
+});
+
+io.on('connection', (socket) => {
+  // Enviamos el estado actual al cliente que entra
+  socket.emit('state:init', STATE);
+
+  // Cliente decide reemplazar todo el estado compartido
+  socket.on('state:replace', (next) => {
+    try {
+      if (!next || typeof next !== 'object') return;
+      STATE = next;
+      socket.broadcast.emit('state:replace', STATE);
+    } catch {}
+  });
+
+  // Cliente envía un "patch" — lo fusionamos y reenviamos a otros
+  socket.on('state:patch', (delta) => {
+    try {
+      if (!delta || typeof delta !== 'object') return;
+      STATE = deepMerge(STATE, delta);
+      socket.broadcast.emit('state:patch', delta);
+    } catch {}
+  });
+});
+
+/* ========= Start ========= */
+httpServer.listen(PORT, () => {
+  console.log(`[PLMECO] Sync backend escuchando en :${PORT}`);
+});
