@@ -1,8 +1,9 @@
-name: Deploy Vite to GitHub Pages
+name: Build and Deploy (Pages)
 
 on:
   push:
     branches: [ main ]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -13,14 +14,47 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: '20' }
-      - run: npm install
-      - run: npm run build
-      - uses: actions/upload-pages-artifact@v3
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
         with:
-          path: ./dist
+          node-version: 20
+          cache: 'npm'
+
+      - name: Configure npm retries/timeouts
+        run: |
+          npm config set registry https://registry.npmjs.org/
+          npm config set fetch-retries 5
+          npm config set fetch-retry-mintimeout 20000
+          npm config set fetch-retry-maxtimeout 600000
+          npm config set fetch-timeout 600000
+          npm config set network-timeout 600000
+
+      - name: Install deps (retry up to 5)
+        run: |
+          set -e
+          for i in 1 2 3 4 5; do
+            echo "Attempt $i/5: npm ci"
+            if npm ci --no-audit --fund=false; then
+              break
+            fi
+            if [ $i -eq 5 ]; then
+              echo "npm ci failed after 5 attempts"; exit 1
+            fi
+            echo "npm ci failed (attempt $i). Sleeping 15s…"
+            sleep 15
+          done
+
+      - name: Build
+        run: npm run build
+
+      - name: Upload artifact to Pages
+        uses: actions/upload-pages-artifact@v3
+        with:
+          # ⬇️ CAMBIA ESTO si tu carpeta final NO es "out"
+          path: ./out
 
   deploy:
     needs: build
@@ -29,5 +63,6 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - id: deployment
+      - name: Deploy to GitHub Pages
+        id: deployment
         uses: actions/deploy-pages@v4
