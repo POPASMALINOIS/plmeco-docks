@@ -1,12 +1,22 @@
-// MecoDockManager.jsx — sin PDF/CSV, sin avisos SLA en tabla central (sin líneas ni iconos),
-// con warning en muelles (drawer lateral) si SALIDA TOPE ≤5 min o rebasada.
+// src/components/MecoDockManager.jsx
+// App de gestión de muelles con:
+// - Importación Excel
+// - Validación de muelles y conflictos entre lados
+// - Panel de muelles en tiempo real con avisos por SALIDA TOPE
+// - Drawer lateral editable + botones "Llegada" / "Salida"
+// - Resumen superior por estados e incidencias
+// - Exportación a Excel
+// - Reordenación de columnas y anchos fijos
+// - NUEVO: Plantillas de autoasignación de muelles por Lado/Destino
+// - NUEVO: Toggle "Autoasignar al importar", botón "Aplicar plantillas", botón "🔖 Guardar como preferencia"
+
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { Download, FileUp, Plus, Trash2, X, AlertTriangle, GripVertical, RefreshCw, Truck } from "lucide-react";
+import { Download, FileUp, Plus, Trash2, X, AlertTriangle, GripVertical, RefreshCw, Truck, BookmarkPlus, Upload, Save } from "lucide-react";
 import * as XLSX from "xlsx";
 import { motion } from "framer-motion";
 
@@ -24,6 +34,7 @@ const DOCKS = [
 ];
 const LADOS = Array.from({ length: 10 }, (_, i) => `Lado ${i}`);
 
+/* ========================= Catálogos ========================= */
 const INCIDENTES = [
   "RETRASO TRANSPORTISTA",
   "RETRASO CD",
@@ -33,6 +44,7 @@ const INCIDENTES = [
 ];
 const CAMION_ESTADOS = ["OK", "CARGANDO", "ANULADO"];
 
+/* ========================= Columnas ========================= */
 const BASE_HEADERS = ["TRANSPORTISTA","MATRICULA","DESTINO","LLEGADA","SALIDA","SALIDA TOPE","OBSERVACIONES"];
 const EXTRA_HEADERS = ["MUELLE","PRECINTO","LLEGADA REAL","SALIDA REAL","INCIDENCIAS","ESTADO"];
 const DEFAULT_ORDER = [
@@ -234,6 +246,84 @@ function getSLA(row){
   return {tope, tip:parts.join(" · ")};
 }
 
+/* ========================= Plantillas (AUTO-ASIGNACIÓN) ========================= */
+// Estructura: { id, lado: "Lado 0" | "Todos", pattern: "ZARA*" | "/re/i", muelles: number[], prioridad: number, dias?: ["L","M"...], activo: boolean }
+function useTemplates(){
+  const [templates,setTemplates] = useLocalStorage("meco-plantillas", []);
+  const [autoOnImport, setAutoOnImport] = useLocalStorage("meco-autoassign-on-import", true);
+  return {templates,setTemplates, autoOnImport, setAutoOnImport};
+}
+const DAYS = ["L","M","X","J","V","S","D"];
+function todayLetter(){
+  const d=new Date(); const n=d.getDay(); // 0=Domingo .. 6=Sabado
+  return ["D","L","M","X","J","V","S"][n];
+}
+function matchPattern(text, patternRaw){
+  const textN = (text||"").toString().toUpperCase().trim();
+  if(!patternRaw) return false;
+  const p = patternRaw.toString().trim();
+  if(p.startsWith("/") && p.endsWith("/")){
+    try{ const re = new RegExp(p.slice(1,-1)); return re.test(textN); }catch{ return false; }
+  }
+  if(p.startsWith("/") && p.toLowerCase().endsWith("/i")){
+    try{ const re = new RegExp(p.slice(1,-2),"i"); return re.test(text); }catch{ return false; }
+  }
+  // comodines *
+  const up = p.toUpperCase();
+  if(up==="*") return true;
+  if(up.startsWith("*") && up.endsWith("*")) return textN.includes(up.slice(1,-1));
+  if(up.startsWith("*")) return textN.endsWith(up.slice(1));
+  if(up.endsWith("*")) return textN.startsWith(up.slice(0,-1));
+  return textN===up;
+}
+function dayAllowed(t){
+  if(!t?.dias || !Array.isArray(t.dias) || t.dias.length===0) return true;
+  return t.dias.includes(todayLetter());
+}
+// Sugerir muelle: devuelve el primer muelle de la regla aplicable que no esté en conflicto
+function suggestMuelleForRow(templates, ladoName, row, app){
+  const destino = (row?.DESTINO||"").toString();
+  const candidatos = (templates||[])
+    .filter(t => t?.activo)
+    .filter(t => (t.lado === ladoName || t.lado === "Todos"))
+    .filter(t => matchPattern(destino, t.pattern))
+    .filter(t => dayAllowed(t))
+    .sort((a,b)=> (b.prioridad||0) - (a.prioridad||0));
+
+  for(const t of candidatos){
+    const muelles = Array.isArray(t.muelles) ? t.muelles : [];
+    for(const mu of muelles){
+      if(!isValidDockValue(mu)) continue;
+      const { conflict } = checkDockConflict(app, String(mu), ladoName, row.id);
+      if(!conflict) return mu;
+    }
+  }
+  return null;
+}
+function applyTemplatesToLado(app, setApp, ladoName, templates){
+  const rows = (app?.lados?.[ladoName]?.rows)||[];
+  if(rows.length===0) return;
+
+  // No pisamos muelles ya rellenados; solo filas con MUELLE vacío
+  const toAssign = rows.filter(r => String(r.MUELLE||"").trim()==="");
+
+  if(toAssign.length===0) return;
+
+  const draft = JSON.parse(JSON.stringify(app)); // copia simple
+  for(const r of toAssign){
+    const mu = suggestMuelleForRow(templates, ladoName, r, draft);
+    if(mu!=null){
+      // aplicar en draft (para que la siguiente validación use el estado ya asignado)
+      const sideRows = draft.lados[ladoName].rows;
+      const idx = sideRows.findIndex(x => x.id===r.id);
+      if(idx>=0){
+        sideRows[idx].MUELLE = String(mu);
+      }
+    }
+  }
+  setApp(draft);
+}
+
 /* ============================== Componente ================================ */
 export default function MecoDockManager(){
   const [app,setApp]=useLocalStorage("meco-app",{ lados:Object.fromEntries(LADOS.map((n)=>[n,{name:n,rows:[]}])) });
@@ -246,6 +336,9 @@ export default function MecoDockManager(){
   const [columnOrder,setColumnOrder]=useLocalStorage("meco-colorder",DEFAULT_ORDER);
   const [summary,setSummary]=useState({open:false,type:null});
   const muPrevRef = useRef({});
+
+  // Plantillas
+  const { templates, setTemplates, autoOnImport, setAutoOnImport } = useTemplates();
 
   const dragFromIdx = useRef(null);
   function onHeaderDragStart(e, idx){
@@ -363,16 +456,26 @@ export default function MecoDockManager(){
         });
         const rows=best?.rows??[];
 
-        setApp(prev => ({
-          ...prev,
-          lados: {
-            ...prev.lados,
-            [lado]: {
-              ...(prev.lados && prev.lados[lado] ? prev.lados[lado] : { name: lado, rows: [] }),
-              rows,
+        // Cargamos filas
+        setApp(prev => {
+          const base = {
+            ...prev,
+            lados: {
+              ...prev.lados,
+              [lado]: {
+                ...(prev.lados && prev.lados[lado] ? prev.lados[lado] : { name: lado, rows: [] }),
+                rows,
+              },
             },
-          },
-        }));
+          };
+          // AUTO-ASIGNACIÓN por plantillas al importar (opcional)
+          if (autoOnImport) {
+            const draft = JSON.parse(JSON.stringify(base));
+            applyTemplatesToLado(draft, (x)=>Object.assign(base,x), lado, templates); // aplica sobre 'base'
+            return draft;
+          }
+          return base;
+        });
 
         if(!rows.length) alert("No se han detectado filas con datos. Revisa cabeceras y datos.");
       }catch(err){ console.error(err); alert("Error al leer el Excel."); }
@@ -457,8 +560,10 @@ export default function MecoDockManager(){
               <Tabs value={active} onValueChange={setActive}>
                 <TabsList className="flex flex-wrap">
                   {LADOS.map((n)=><TabsTrigger key={n} value={n} className="px-3">{n}</TabsTrigger>)}
+                  <TabsTrigger value="Plantillas" className="px-3">Plantillas</TabsTrigger>
                 </TabsList>
 
+                {/* ======= Toolbar principal ======= */}
                 <div className="mt-3">
                   <ToolbarX
                     onImport={(f)=>importExcel(f,active)}
@@ -470,9 +575,13 @@ export default function MecoDockManager(){
                     onResetCache={()=>{ try{localStorage.removeItem("meco-app"); localStorage.removeItem("meco-colorder");}catch(e){} window.location.reload(); }}
                     activeLadoName={active}
                     activeRowsCount={activeRowsCount}
+                    autoOnImport={autoOnImport}
+                    setAutoOnImport={setAutoOnImport}
+                    onApplyTemplates={()=>applyTemplatesToLado(app, setApp, active, templates)}
                   />
                 </div>
 
+                {/* ======= Pestañas por lado ======= */}
                 {LADOS.map((n)=>{
                   const rows=(app?.lados?.[n]?.rows)||[];
                   const visible=visibleRowsByLado(n);
@@ -497,7 +606,7 @@ export default function MecoDockManager(){
                             </div>
                           </div>
 
-                          {/* Filas (sin avisos SLA visuales en tabla) */}
+                          {/* Filas */}
                           <div>
                             {visible.map((row)=>{
                               const estado=(row?.ESTADO||"").toString();
@@ -550,6 +659,14 @@ export default function MecoDockManager(){
                     </TabsContent>
                   );
                 })}
+
+                {/* ======= Pestaña PLANTILLAS ======= */}
+                <TabsContent value="Plantillas" className="mt-3">
+                  <TemplatesTab
+                    templates={templates}
+                    setTemplates={setTemplates}
+                  />
+                </TabsContent>
               </Tabs>
             </CardContent>
           </Card>
@@ -567,6 +684,23 @@ export default function MecoDockManager(){
           commitDockValue={commitDockValue}
           setField={setField}
           muPrevRef={muPrevRef}
+          onSavePreference={(ladoName, row)=>{
+            const mu = Number(String(row?.MUELLE||"").trim());
+            const dest = (row?.DESTINO||"").toString().trim();
+            if(!mu || !DOCKS.includes(mu)){ alert("Asigna primero un muelle válido a esta fila para poder guardar preferencia."); return; }
+            if(!dest){ alert("La fila no tiene DESTINO para crear la plantilla."); return; }
+            const t = {
+              id: crypto.randomUUID(),
+              lado: ladoName || "Todos",
+              pattern: dest,           // texto exacto
+              muelles: [mu],
+              prioridad: 10,
+              dias: [],                // todos los días
+              activo: true,
+            };
+            setTemplates((prev)=>[t, ...(Array.isArray(prev)?prev:[])]);
+            alert(`Preferencia guardada:\nLado: ${t.lado}\nDestino: ${t.pattern}\nMuelle: ${mu}`);
+          }}
         />
 
         {/* Modal resumen */}
@@ -672,7 +806,7 @@ function DockRight({app,setDockPanel,dockPanel}){
 }
 
 /* ============================== Drawer lateral ============================ */
-function DockDrawer({app,dockPanel,setDockPanel,updateRowDirect,commitDockValue,setField,muPrevRef}){
+function DockDrawer({app,dockPanel,setDockPanel,updateRowDirect,commitDockValue,setField,muPrevRef,onSavePreference}){
   const open = !!dockPanel?.open;
   if(!open) return null;
 
@@ -740,7 +874,10 @@ function DockDrawer({app,dockPanel,setDockPanel,updateRowDirect,commitDockValue,
                   <Truck className="w-4 h-4 mr-2" />
                   Salida
                 </Button>
-                <div className="text-xs text-muted-foreground">Graban <b>LLEGADA REAL</b> y <b>SALIDA REAL</b> con la hora actual (HH:mm).</div>
+                <Button onClick={()=>onSavePreference(lado, row)} variant="outline" className="h-9">
+                  <BookmarkPlus className="w-4 h-4 mr-2" />
+                  Guardar preferencia
+                </Button>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
@@ -841,8 +978,6 @@ function AlertStrip({ topeCrit, topeWarn, onOpen }) {
         <span className="text-xs text-muted-foreground flex items-center gap-1">
           <AlertTriangle className="w-4 h-4" /> Avisos SLA:
         </span>
-
-        {/* ÚNICO BOTÓN: SLA Tope */}
         <button
           onClick={()=>onOpen("SLA_TOPE")}
           className="flex items-center gap-2 px-2 py-1 rounded-full bg-red-100 text-red-800 border border-red-200 hover:bg-red-200 transition"
@@ -852,7 +987,6 @@ function AlertStrip({ topeCrit, topeWarn, onOpen }) {
           <span className="text-[11px] px-1 rounded bg-red-300 text-red-900">Crit: {topeCrit}</span>
           <span className="text-[11px] px-1 rounded bg-amber-200 text-amber-800">Aviso: {topeWarn}</span>
         </button>
-
         {!hasAnyTope && (
           <span className="text-xs text-emerald-700 bg-emerald-100 border-emerald-200 border px-2 py-0.5 rounded-full">
             Sin avisos SLA Tope en este momento
@@ -904,7 +1038,6 @@ function SummaryModal({open,type,data,onClose}){
   else if(type==="INCIDENCIAS"){ title="Resumen · Incidencias"; rows=data.INCIDENCIAS; }
   else if(type==="SLA_TOPE"){ title="Resumen · SLA Tope"; rows=data.SLA_TOPE.rows; }
 
-  // Etiqueta de la última columna y función de contenido según el tipo
   const lastColHeader = (type==="INCIDENCIAS") ? "Incidencias" : (type==="SLA_TOPE" ? "Estado / Motivo" : "Estado");
   const getLastColValue = (r) => {
     if(type==="INCIDENCIAS") return r.INCIDENCIAS || "—";
@@ -948,7 +1081,9 @@ function SummaryModal({open,type,data,onClose}){
 function ToolbarX({
   onImport,onAddRow,onClear,filterEstado,setFilterEstado,
   onExportXLSX,onResetCache,
-  activeLadoName, activeRowsCount
+  activeLadoName, activeRowsCount,
+  autoOnImport, setAutoOnImport,
+  onApplyTemplates
 }){
   const fileRef=useRef(null);
 
@@ -993,6 +1128,17 @@ function ToolbarX({
       <Button size="sm" variant="outline" onClick={onAddRow}>
         <Plus className="mr-2 h-4 w-4" /> Nueva fila
       </Button>
+      <Button size="sm" variant="outline" onClick={onApplyTemplates} title="Aplicar plantillas al lado activo (solo filas sin muelle)">
+        <Save className="mr-2 h-4 w-4" /> Aplicar plantillas
+      </Button>
+
+      <div className="flex items-center gap-2 ml-2">
+        <label className="text-sm text-muted-foreground flex items-center gap-2">
+          <input type="checkbox" className="scale-110" checked={!!autoOnImport} onChange={(e)=>setAutoOnImport(!!e.target.checked)} />
+          Autoasignar al importar
+        </label>
+      </div>
+
       <Button size="sm" variant="destructive" onClick={handleClear}>
         <Trash2 className="mr-2 h-4 w-4" /> Vaciar lado
       </Button>
@@ -1023,4 +1169,179 @@ function exportXLSX(lado,app,columnOrder){
   ws["!cols"]=colWidths;
   const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,lado.replace(/[\\/?*[\]]/g,"_").slice(0,31));
   XLSX.writeFile(wb,`${lado.replace(/\s+/g,"_")}.xlsx`,{bookType:"xlsx",compression:true});
+}
+
+/* ============================ Pestaña: Plantillas ============================ */
+function TemplatesTab({templates, setTemplates}){
+  const fileRef = useRef(null);
+
+  function addTemplate(){
+    const t={
+      id: crypto.randomUUID(),
+      lado: "Todos",
+      pattern: "",
+      muelles: [],
+      prioridad: 1,
+      dias: [],        // vacío => todos los días
+      activo: true,
+    };
+    setTemplates((prev)=>[...(Array.isArray(prev)?prev:[]), t]);
+  }
+
+  function updateTemplate(id, patch){
+    setTemplates((prev)=>{
+      const arr = Array.isArray(prev)? [...prev] : [];
+      const i = arr.findIndex(x=>x.id===id);
+      if(i>=0) arr[i] = {...arr[i], ...patch};
+      return arr;
+    });
+  }
+
+  function removeTemplate(id){
+    const ok = confirm("¿Eliminar esta plantilla?");
+    if(!ok) return;
+    setTemplates((prev)=> (Array.isArray(prev)? prev.filter(x=>x.id!==id) : []));
+  }
+
+  function toggleDay(id, letter){
+    setTemplates((prev)=>{
+      const arr = Array.isArray(prev)? [...prev] : [];
+      const i = arr.findIndex(x=>x.id===id);
+      if(i<0) return arr;
+      const t = arr[i]; const d = new Set(t.dias||[]);
+      if(d.has(letter)) d.delete(letter); else d.add(letter);
+      arr[i] = {...t, dias: Array.from(d)};
+      return arr;
+    });
+  }
+
+  function importJson(file){
+    const reader = new FileReader();
+    reader.onload = (e)=>{
+      try{
+        const json = JSON.parse(e.target.result);
+        if(!Array.isArray(json)) throw new Error("El JSON debe ser un array de plantillas.");
+        const cleaned = json.map((t)=>({
+          id: t.id || crypto.randomUUID(),
+          lado: t.lado || "Todos",
+          pattern: t.pattern || "",
+          muelles: (Array.isArray(t.muelles)? t.muelles.map(n=>Number(n)).filter(n=>Number.isFinite(n)) : []),
+          prioridad: Number(t.prioridad||0),
+          dias: Array.isArray(t.dias)? t.dias.filter(x=>DAYS.includes(x)) : [],
+          activo: !!t.activo,
+        }));
+        setTemplates(cleaned);
+        alert(`Importadas ${cleaned.length} plantillas.`);
+      }catch(err){
+        console.error(err); alert("JSON inválido.");
+      }
+    };
+    reader.readAsText(file);
+  }
+
+  function exportJson(){
+    const data = JSON.stringify(templates||[], null, 2);
+    const blob = new Blob([data], {type:"application/json"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href=url; a.download="plantillas-muelles.json";
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <div className="flex items-center justify-between">
+          <CardTitle>Plantillas de muelles (por Lado y Destino)</CardTitle>
+          <div className="flex items-center gap-2">
+            <Button size="sm" variant="outline" onClick={exportJson}>
+              <Download className="mr-2 h-4 w-4" /> Exportar JSON
+            </Button>
+            <input ref={fileRef} type="file" accept="application/json" className="hidden"
+              onChange={(e)=>{ const f=e.target.files?.[0]; if(f) importJson(f); if(fileRef.current) fileRef.current.value=""; }}
+            />
+            <Button size="sm" variant="outline" onClick={()=>fileRef.current?.click()}>
+              <Upload className="mr-2 h-4 w-4" /> Importar JSON
+            </Button>
+            <Button size="sm" onClick={addTemplate}>
+              <Plus className="mr-2 h-4 w-4" /> Nueva regla
+            </Button>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <div className="overflow-auto">
+          <div className="min-w-[900px]">
+            <div className="grid grid-cols-[110px_150px_minmax(220px,1fr)_200px_110px_230px_90px] gap-2 px-2 py-2 bg-slate-50 border text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">
+              <div>Activo</div>
+              <div>Lado</div>
+              <div>Destino (patrón)</div>
+              <div>Muelles preferentes (coma)</div>
+              <div>Prioridad</div>
+              <div>Días (L M X J V S D)</div>
+              <div>Acciones</div>
+            </div>
+
+            {(templates||[]).length===0 && (
+              <div className="px-3 py-6 text-sm text-muted-foreground">
+                No hay plantillas aún. Crea una con “Nueva regla” o guarda una preferencia desde el drawer del muelle.
+              </div>
+            )}
+
+            {(templates||[]).map(t=>(
+              <div key={t.id} className="grid grid-cols-[110px_150px_minmax(220px,1fr)_200px_110px_230px_90px] gap-2 px-2 py-2 border-b items-center">
+                <div>
+                  <label className="inline-flex items-center gap-2 text-sm">
+                    <input type="checkbox" checked={!!t.activo} onChange={(e)=>updateTemplate(t.id,{activo:!!e.target.checked})} />
+                    {t.activo ? "Sí" : "No"}
+                  </label>
+                </div>
+                <div>
+                  <select className="h-8 w-full border rounded px-2 bg-white text-sm" value={t.lado||"Todos"} onChange={(e)=>updateTemplate(t.id,{lado:e.target.value})}>
+                    <option value="Todos">Todos</option>
+                    {LADOS.map(l=> <option key={l} value={l}>{l}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <input className="h-8 w-full border rounded px-2 bg-white text-sm"
+                         placeholder='ZARA*, *VALLECAS, /BERSANA/i'
+                         value={t.pattern||""}
+                         onChange={(e)=>updateTemplate(t.id,{pattern:e.target.value})}/>
+                </div>
+                <div>
+                  <input className="h-8 w-full border rounded px-2 bg-white text-sm"
+                         placeholder="320,321,322"
+                         value={(t.muelles||[]).join(",")}
+                         onChange={(e)=>{
+                           const arr = e.target.value.split(",").map(s=>Number(s.trim())).filter(n=>Number.isFinite(n));
+                           updateTemplate(t.id,{muelles:arr});
+                         }}/>
+                </div>
+                <div>
+                  <input className="h-8 w-full border rounded px-2 bg-white text-sm"
+                         type="number" value={Number(t.prioridad||0)}
+                         onChange={(e)=>updateTemplate(t.id,{prioridad:Number(e.target.value||0)})}/>
+                </div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  {DAYS.map(d=>(
+                    <label key={d} className={`border rounded px-2 py-0.5 text-xs cursor-pointer ${t.dias?.includes(d)?"bg-slate-800 text-white":"bg-white"}`}>
+                      <input type="checkbox" className="hidden" checked={t.dias?.includes(d)||false} onChange={()=>toggleDay(t.id,d)} />
+                      {d}
+                    </label>
+                  ))}
+                  <button className="text-xs underline ml-2" onClick={()=>updateTemplate(t.id,{dias:[]})}>Todos</button>
+                </div>
+                <div className="flex items-center justify-center">
+                  <Button size="icon" variant="ghost" onClick={()=>removeTemplate(t.id)} title="Eliminar">
+                    <Trash2 className="w-4 h-4" />
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
 }
