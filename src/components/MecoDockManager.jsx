@@ -1,4 +1,4 @@
-// MecoDockManager.jsx — Dock Drawer con botón "Llegada" (camión) que graba LLEGADA REAL (HH:mm Europe/Madrid)
+// MecoDockManager.jsx — Dock Drawer con botones "Llegada" y "Salida" (HH:mm Europe/Madrid)
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -122,10 +122,7 @@ const FIXED_PX = {
 };
 const ACTIONS_PX = 44; // columna Acciones
 
-// --- util ancho columnas ---
-function px(n){
-  return `${Math.max(40, Math.floor(n))}px`; // mínimo 40px
-}
+function px(n){ return `${Math.max(40, Math.floor(n))}px`; }
 function computeColumnTemplate(_rows, order){
   const widths = (order || []).map((h) => ((h in FIXED_PX) ? px(FIXED_PX[h]) : "minmax(120px,1fr)"));
   return `${widths.join(" ")} ${px(ACTIONS_PX)}`;
@@ -646,7 +643,7 @@ function DockDrawer({app,dockPanel,setDockPanel,updateRowDirect,commitDockValue,
   const { lado, rowId, dock } = dockPanel;
   const row = (lado && rowId) ? (app?.lados?.[lado]?.rows||[]).find(r=>r.id===rowId) : null;
 
-  // Acción: marcar llegada ahora (HH:mm Europe/Madrid)
+  // Acciones rápidas: llegada/salida ahora (HH:mm Europe/Madrid)
   function marcarLlegadaAhora(){
     if(!lado || !row) return;
     const now = nowHHmmEuropeMadrid();
@@ -655,6 +652,15 @@ function DockDrawer({app,dockPanel,setDockPanel,updateRowDirect,commitDockValue,
       if(!ok) return;
     }
     setField(lado, row.id, "LLEGADA REAL", now);
+  }
+  function marcarSalidaAhora(){
+    if(!lado || !row) return;
+    const now = nowHHmmEuropeMadrid();
+    if((row["SALIDA REAL"]||"").trim()!==""){
+      const ok = confirm(`Esta fila ya tiene SALIDA REAL = "${row["SALIDA REAL"]}".\n¿Quieres sobrescribirla por ${now}?`);
+      if(!ok) return;
+    }
+    setField(lado, row.id, "SALIDA REAL", now);
   }
 
   return (
@@ -690,13 +696,17 @@ function DockDrawer({app,dockPanel,setDockPanel,updateRowDirect,commitDockValue,
                 </div>
               </div>
 
-              {/* Botón rápido de llegada */}
+              {/* Botones rápidos */}
               <div className="flex items-center gap-2 pt-1">
                 <Button onClick={marcarLlegadaAhora} className="h-9">
                   <Truck className="w-4 h-4 mr-2" />
                   Llegada
                 </Button>
-                <div className="text-xs text-muted-foreground">Marca la <b>llegada real</b> con la hora actual (HH:mm).</div>
+                <Button onClick={marcarSalidaAhora} className="h-9 bg-red-600 hover:bg-red-700 text-white">
+                  <Truck className="w-4 h-4 mr-2" />
+                  Salida
+                </Button>
+                <div className="text-xs text-muted-foreground">Graban <b>LLEGADA REAL</b> y <b>SALIDA REAL</b> con la hora actual (HH:mm).</div>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
@@ -951,7 +961,7 @@ function exportXLSX(lado,app,columnOrder){
   const ws=XLSX.utils.json_to_sheet(data,{header:headers,skipHeader:false});
   const colWidths=headers.map(h=>{
     if (h in FIXED_PX) return { wpx: FIXED_PX[h] };
-    if (TIME_COLS.has(h)) return { wpx: 140 }; // solo aspecto en Excel
+    if (TIME_COLS.has(h)) return { wpx: 140 };
     return { wpx: 140 };
   });
   ws["!cols"]=colWidths;
