@@ -1,4 +1,4 @@
-// MecoDockManager.jsx — Confirmaciones en "Vaciar lado" y "Limpiar caché" + resto de funcionalidades
+// MecoDockManager.jsx — Botón SLA Espera eliminado en barra superior + DEFAULT_ORDER personalizado
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -48,6 +48,7 @@ const DEFAULT_ORDER = [
   "SALIDA",
   "SALIDA TOPE",
   "OBSERVACIONES",
+  "INCIDENCIAS",
 ];
 const EXPECTED_KEYS = [...new Set([...BASE_HEADERS, ...EXTRA_HEADERS])];
 
@@ -810,24 +811,32 @@ function SelectX({label,value,onChange,options}){ return (
 
 /* ===================== LÍNEA SUPERIOR DE AVISOS (SLA) ===================== */
 function AlertStrip({ waitCrit, waitWarn, topeCrit, topeWarn, onOpen }) {
-  const hasAny = (waitCrit + waitWarn + topeCrit + topeWarn) > 0;
+  // Ahora la barra superior solo muestra el botón de SLA Tope
+  const hasAnyTope = (topeCrit + topeWarn) > 0;
+
   return (
-    <div className={`mb-3 ${hasAny ? "" : "opacity-70"}`}>
+    <div className={`mb-3 ${hasAnyTope ? "" : "opacity-70"}`}>
       <div className="flex flex-wrap items-center gap-2 text-sm">
         <span className="text-xs text-muted-foreground flex items-center gap-1">
           <AlertTriangle className="w-4 h-4" /> Avisos SLA:
         </span>
-        <button onClick={()=>onOpen("SLA_WAIT")} className="flex items-center gap-2 px-2 py-1 rounded-full bg-amber-100 text-amber-800 border border-amber-200 hover:bg-amber-200 transition" title="Ver detalle · SLA Espera">
-          <span className="font-medium">Espera</span>
-          <span className="text-[11px] px-1 rounded bg-red-200 text-red-800">Crit: {waitCrit}</span>
-          <span className="text-[11px] px-1 rounded bg-amber-200 text-amber-800">Aviso: {waitWarn}</span>
-        </button>
-        <button onClick={()=>onOpen("SLA_TOPE")} className="flex items-center gap-2 px-2 py-1 rounded-full bg-red-100 text-red-800 border border-red-200 hover:bg-red-200 transition" title="Ver detalle · SLA Tope">
+
+        {/* ✅ Solo botón de SLA Tope */}
+        <button
+          onClick={()=>onOpen("SLA_TOPE")}
+          className="flex items-center gap-2 px-2 py-1 rounded-full bg-red-100 text-red-800 border border-red-200 hover:bg-red-200 transition"
+          title="Ver detalle · SLA Tope"
+        >
           <span className="font-medium">Tope</span>
           <span className="text-[11px] px-1 rounded bg-red-300 text-red-900">Crit: {topeCrit}</span>
           <span className="text-[11px] px-1 rounded bg-amber-200 text-amber-800">Aviso: {topeWarn}</span>
         </button>
-        {!hasAny && <span className="text-xs text-emerald-700 bg-emerald-100 border-emerald-200 border px-2 py-0.5 rounded-full">Sin avisos SLA en este momento</span>}
+
+        {!hasAnyTope && (
+          <span className="text-xs text-emerald-700 bg-emerald-100 border-emerald-200 border px-2 py-0.5 rounded-full">
+            Sin avisos SLA Tope en este momento
+          </span>
+        )}
       </div>
     </div>
   );
