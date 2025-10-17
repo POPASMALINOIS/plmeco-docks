@@ -1,7 +1,7 @@
 // src/components/MecoDockManager.jsx
 // App de gestión de muelles con plantillas, validación, panel lateral, etc.
 // Indicador de carga aérea: icono de avión en el botón del muelle si hay _AIR_ITEMS
-// Exportación Excel con estilos (exceljs): autoajuste, encabezados cian, fuente 22, DESTINO gris si ESTADO=OK
+// Exportación Excel simple (xlsx): sin estilos, directa
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -13,9 +13,7 @@ import {
   Download, FileUp, Plus, Trash2, X, AlertTriangle, GripVertical, RefreshCw,
   Truck, BookmarkPlus, Upload, Save, Plane
 } from "lucide-react";
-import * as XLSX from "xlsx";              // Para importación de Excel
-import ExcelJS from "exceljs";             // Para exportación con estilos
-import { saveAs } from "file-saver";       // Para descargar el .xlsx en el navegador
+import * as XLSX from "xlsx";              // Importación y exportación Excel
 import { motion } from "framer-motion";
 
 /* ========================= PARÁMETROS SLA ====================== */
@@ -51,7 +49,7 @@ const DEFAULT_ORDER = [
 ];
 const EXPECTED_KEYS = [...new Set([...BASE_HEADERS, ...EXTRA_HEADERS])];
 
-// Colorear celdas hasta "SALIDA TOPE" por ESTADO
+// Colorear celdas hasta "SALIDA TOPE" por ESTADO (en pantalla)
 const COLOR_UP_TO = new Set([
   "TRANSPORTISTA","MATRICULA","DESTINO","MUELLE","PRECINTO",
   "LLEGADA","LLEGADA REAL","SALIDA","SALIDA REAL","SALIDA TOPE",
@@ -508,6 +506,26 @@ export default function MecoDockManager(){
     return list.filter(r=>(r?.ESTADO||"")===filterEstado);
   }
 
+  // ======= EXPORTACIÓN XLSX (simple, sin estilos) =======
+  function exportXLSX(lado, app, columnOrder){
+    try{
+      const headers = columnOrder;
+      const rows = (app?.lados?.[lado]?.rows) || [];
+      const aoa = [
+        headers,
+        ...rows.map(r => headers.map(h => r?.[h] ?? "")),
+      ];
+      const ws = XLSX.utils.aoa_to_sheet(aoa);
+      const wb = XLSX.utils.book_new();
+      const wsName = (lado || "Operativa").replace(/[\\/?*[\]]/g, "_").slice(0, 31);
+      XLSX.utils.book_append_sheet(wb, ws, wsName);
+      XLSX.writeFile(wb, `${wsName}.xlsx`);
+    }catch(err){
+      console.error(err);
+      alert("No se pudo exportar el Excel.");
+    }
+  }
+
   const activeRowsCount = (app?.lados?.[active]?.rows || []).length;
   const visibleRowsByLado = (lado)=>filteredRows(lado);
 
@@ -751,7 +769,7 @@ function DockRight({app,setDockPanel,dockPanel}){
             const sev = iconSeverity(info);
             const iconTitle = sev==="crit" ? "SALIDA TOPE rebasada" : "SALIDA TOPE en ≤5 min";
 
-            // === Indicador de CARGA AÉREA (icono avión) ===
+            // Indicador de CARGA AÉREA (icono avión)
             const hasAir = !!(info?.row && Array.isArray(info.row._AIR_ITEMS) && info.row._AIR_ITEMS.length > 0);
             const airIcon = hasAir ? (
               <span
@@ -1150,7 +1168,7 @@ function SummaryModal({open,type,data,onClose}){
     if(type==="INCIDENCIAS") return r.INCIDENCIAS || "—";
     if(type==="SLA_TOPE") return r._sla?.tip || r.ESTADO || "—";
     return r.ESTADO || "—";
-  };
+    };
 
   return (
     <>
@@ -1266,88 +1284,6 @@ function ToolbarX({
       </div>
     </div>
   );
-}
-
-// ======= EXPORTACIÓN XLSX con estilos (exceljs) =======
-async function exportXLSX(lado, app, columnOrder){
-  try{
-    const headers = columnOrder;
-    const rows = (app?.lados?.[lado]?.rows) || [];
-
-    const wb = new ExcelJS.Workbook();
-    const wsName = (lado || "Operativa").replace(/[\\/?*[\]]/g, "_").slice(0, 31);
-    const ws = wb.addWorksheet(wsName);
-
-    // Cabeceras
-    ws.addRow(headers);
-    // Datos
-    rows.forEach((r)=>{
-      const arr = headers.map((h)=> (r?.[h] ?? ""));
-      ws.addRow(arr);
-    });
-
-    // Estilos — fuente 22 en todo
-    const headerRow = ws.getRow(1);
-    headerRow.eachCell((cell)=>{
-      cell.font = { size: 22, bold: true };
-      cell.alignment = { vertical: "middle", horizontal: "center", wrapText: true };
-      cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFE0F7FF" } }; // cian muy suave
-      cell.border = {
-        top: { style: "thin", color: { argb: "FFBFD6E0" } },
-        left: { style: "thin", color: { argb: "FFBFD6E0" } },
-        bottom: { style: "thin", color: { argb: "FFBFD6E0" } },
-        right: { style: "thin", color: { argb: "FFBFD6E0" } },
-      };
-    });
-
-    for (let r = 2; r <= ws.rowCount; r++){
-      const row = ws.getRow(r);
-      row.eachCell((cell)=>{
-        cell.font = { size: 22 };
-        cell.alignment = { vertical: "middle", horizontal: "left", wrapText: true };
-      });
-    }
-
-    // DESTINO gris si ESTADO = OK
-    const idxDestino = headers.indexOf("DESTINO") + 1;
-    const idxEstado  = headers.indexOf("ESTADO") + 1;
-    if (idxDestino > 0 && idxEstado > 0){
-      for (let r = 2; r <= ws.rowCount; r++){
-        const estadoVal = (ws.getRow(r).getCell(idxEstado).value ?? "").toString().toUpperCase();
-        if (estadoVal === "OK"){
-          const cell = ws.getRow(r).getCell(idxDestino);
-          cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF4F4F4" } }; // gris muy suave
-        }
-      }
-    }
-
-    // Autoajuste de columnas
-    headers.forEach((h, i)=>{
-      const colIndex = i + 1;
-      let maxLen = (h ?? "").toString().length;
-      for (let r = 2; r <= ws.rowCount; r++){
-        const v = ws.getRow(r).getCell(colIndex).value;
-        const s = (v == null) ? "" : v.toString();
-        if (s.length > maxLen) maxLen = s.length;
-      }
-      const width = Math.min(Math.max(maxLen + 2, 8), 80); // entre 8 y 80
-      ws.getColumn(colIndex).width = width;
-    });
-
-    // Altura de filas
-    headerRow.height = 28;
-    for (let r = 2; r <= ws.rowCount; r++){
-      ws.getRow(r).height = 24;
-    }
-
-    // Descargar
-    const buf = await wb.xlsx.writeBuffer();
-    const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
-    saveAs(blob, `${wsName}.xlsx`);
-  }catch(err){
-    console.error(err);
-    alert("No se pudo exportar el Excel con estilos.");
-  }
 }
 
 /* ============================ Pestaña: Plantillas ============================ */
