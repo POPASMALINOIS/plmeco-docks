@@ -1,4 +1,4 @@
-// MecoDockManager.jsx — Colorear solo hasta "SALIDA TOPE" (incluida) con tonos suaves
+// MecoDockManager.jsx — Confirmaciones en "Vaciar lado" y "Limpiar caché" + resto de funcionalidades
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -41,7 +41,7 @@ const DEFAULT_ORDER = [
 ];
 const EXPECTED_KEYS = [...new Set([...BASE_HEADERS, ...EXTRA_HEADERS])];
 
-/* === NUEVO: columnas que se colorean hasta "SALIDA TOPE" (incluida) === */
+/* === Colorear solo hasta "SALIDA TOPE" (incluida) === */
 const COLOR_UP_TO = new Set([
   "TRANSPORTISTA","MATRICULA","DESTINO","MUELLE","PRECINTO",
   "LLEGADA","LLEGADA REAL","SALIDA","SALIDA REAL","SALIDA TOPE",
@@ -177,7 +177,7 @@ function deriveDocks(lados){
 function dockColor(state){ if(state==="LIBRE")return "bg-emerald-500"; if(state==="ESPERA")return "bg-amber-500"; return "bg-red-600"; }
 function estadoBadgeColor(estado){ if(estado==="ANULADO")return "bg-red-600"; if(estado==="CARGANDO")return "bg-amber-500"; if(estado==="OK")return "bg-emerald-600"; return "bg-slate-400"; }
 
-/* Tonos suaves SOLO por celda (hasta "SALIDA TOPE") */
+/* Tonos suaves por celda (hasta "SALIDA TOPE") */
 function cellBgByEstado(estado){
   if(estado==="ANULADO") return "bg-rose-50";
   if(estado==="CARGANDO") return "bg-amber-50";
@@ -426,6 +426,8 @@ export default function MecoDockManager(){
     return list.filter(r=>(r?.ESTADO||"")===filterEstado);
   }
 
+  const activeRowsCount = (app?.lados?.[active]?.rows || []).length;
+
   /* ====== Render ====== */
   const visibleRowsByLado = (lado)=>filteredRows(lado);
 
@@ -478,6 +480,8 @@ export default function MecoDockManager(){
                     onExportCSV={()=>exportCSV(active,app,columnOrder)}
                     onExportXLSX={()=>exportXLSX(active,app,columnOrder)}
                     onResetCache={()=>{ try{localStorage.removeItem("meco-app"); localStorage.removeItem("meco-colorder");}catch(e){} window.location.reload(); }}
+                    activeLadoName={active}
+                    activeRowsCount={activeRowsCount}
                   />
                 </div>
 
@@ -515,7 +519,6 @@ export default function MecoDockManager(){
                               return (
                                 <Tooltip key={row.id}>
                                   <TooltipTrigger asChild>
-                                    {/* NOTA: ya no aplicamos fondo a toda la fila; solo a celdas de COLOR_UP_TO */}
                                     <div className={`grid border-t ${rowAccentBorder(estado)} border-slate-200 ${outline}`} style={{gridTemplateColumns:gridTemplate, minWidth: "100%"}}>
                                       {columnOrder.map((h)=>{
                                         const isEstado=h==="ESTADO", isInc=h==="INCIDENCIAS", isMuelle=h==="MUELLE";
@@ -899,8 +902,36 @@ function SummaryModal({open,type,data,onClose}){
 }
 
 /* ============================ Toolbar & Export ============================ */
-function ToolbarX({onImport,onAddRow,onClear,filterEstado,setFilterEstado,onExportCSV,onExportXLSX,onResetCache}){
+function ToolbarX({
+  onImport,onAddRow,onClear,filterEstado,setFilterEstado,
+  onExportCSV,onExportXLSX,onResetCache,
+  activeLadoName, activeRowsCount
+}){
   const fileRef=useRef(null);
+
+  function handleClear(){
+    const n = activeRowsCount ?? 0;
+    const lado = activeLadoName || "lado activo";
+    const ok = confirm(
+      `¿Vaciar ${lado}?` +
+      `\n\nSe eliminarán ${n} fila(s) de este lado.` +
+      `\nEsta acción no se puede deshacer y no afectará a otros lados.` +
+      `\n\n¿Confirmas?`
+    );
+    if(ok) onClear();
+  }
+
+  function handleReset(){
+    const ok = confirm(
+      "¿Seguro que quieres limpiar la caché local?" +
+      "\n\nEsto borrará TODAS las operativas de TODOS los lados," +
+      "\nasí como el orden y tamaño de columnas guardado." +
+      "\nSe recargará la página al terminar." +
+      "\n\n¿Confirmas?"
+    );
+    if(ok) onResetCache();
+  }
+
   return (
     <div className="flex items-center gap-2 flex-wrap">
       <input
@@ -922,10 +953,10 @@ function ToolbarX({onImport,onAddRow,onClear,filterEstado,setFilterEstado,onExpo
       <Button size="sm" variant="outline" onClick={onAddRow}>
         <Plus className="mr-2 h-4 w-4" /> Nueva fila
       </Button>
-      <Button size="sm" variant="destructive" onClick={onClear}>
+      <Button size="sm" variant="destructive" onClick={handleClear}>
         <Trash2 className="mr-2 h-4 w-4" /> Vaciar lado
       </Button>
-      <Button size="sm" variant="secondary" onClick={onResetCache}>
+      <Button size="sm" variant="secondary" onClick={handleReset}>
         Limpiar caché local
       </Button>
 
