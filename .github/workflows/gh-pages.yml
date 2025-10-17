@@ -21,7 +21,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: 'npm'
+          # ⛔️ Sin cache porque no hay lockfile
 
       - name: Configure npm retries/timeouts
         run: |
@@ -32,25 +32,25 @@ jobs:
           npm config set fetch-timeout 600000
           npm config set network-timeout 600000
 
-      - name: Install deps (retry up to 5)
+      - name: Install deps (retry up to 5) — npm install
         run: |
           set -e
           for i in 1 2 3 4 5; do
-            echo "Attempt $i/5: npm ci"
-            if npm ci --no-audit --fund=false; then
+            echo "Attempt $i/5: npm install"
+            if npm install --no-audit --fund=false; then
               break
             fi
             if [ $i -eq 5 ]; then
-              echo "npm ci failed after 5 attempts"; exit 1
+              echo "npm install failed after 5 attempts"; exit 1
             fi
-            echo "npm ci failed (attempt $i). Sleeping 15s…"
+            echo "npm install failed (attempt $i). Sleeping 15s…"
             sleep 15
           done
 
-      - name: Build
+      - name: Build (Vite)
         run: npm run build
 
-      - name: Upload artifact to Pages
+      - name: Upload artifact to Pages (dist/)
         uses: actions/upload-pages-artifact@v3
         with:
           path: ./dist
