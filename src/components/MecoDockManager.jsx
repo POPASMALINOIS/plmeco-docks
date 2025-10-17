@@ -1,14 +1,6 @@
 // src/components/MecoDockManager.jsx
-// App de gestión de muelles con:
-// - Importación Excel
-// - Validación de muelles y conflictos entre lados
-// - Panel de muelles en tiempo real con avisos por SALIDA TOPE
-// - Drawer lateral editable + botones "Llegada" / "Salida"
-// - Resumen superior por estados e incidencias
-// - Exportación a Excel
-// - Reordenación de columnas y anchos fijos
-// - NUEVO: Plantillas de autoasignación de muelles por Lado/Destino
-// - NUEVO: Toggle "Autoasignar al importar", botón "Aplicar plantillas", botón "🔖 Guardar como preferencia"
+// App de gestión de muelles con plantillas, validación, panel lateral, etc.
+// + NUEVO: Carga aérea por muelle 338–350 (destinos/m³/bx con totales por camión)
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -21,8 +13,8 @@ import * as XLSX from "xlsx";
 import { motion } from "framer-motion";
 
 /* ========================= PARÁMETROS SLA ====================== */
-const SLA_TOPE_WARN_MIN = 15;       // para contadores/resúmenes (no pinta en tabla)
-const SLA_TOPE_ICON_PREMIN = 5;     // icono en panel muelles (≤5 min o rebasado)
+const SLA_TOPE_WARN_MIN = 15;
+const SLA_TOPE_ICON_PREMIN = 5;
 /* ============================================================== */
 
 // Muelles permitidos
@@ -33,6 +25,8 @@ const DOCKS = [
   359,360,361,362,363,364,365,366,367,368,369,370,
 ];
 const LADOS = Array.from({ length: 10 }, (_, i) => `Lado ${i}`);
+const AIR_DOCK_MIN = 338;
+const AIR_DOCK_MAX = 350;
 
 /* ========================= Catálogos ========================= */
 const INCIDENTES = [
@@ -247,7 +241,6 @@ function getSLA(row){
 }
 
 /* ========================= Plantillas (AUTO-ASIGNACIÓN) ========================= */
-// Estructura: { id, lado: "Lado 0" | "Todos", pattern: "ZARA*" | "/re/i", muelles: number[], prioridad: number, dias?: ["L","M"...], activo: boolean }
 function useTemplates(){
   const [templates,setTemplates] = useLocalStorage("meco-plantillas", []);
   const [autoOnImport, setAutoOnImport] = useLocalStorage("meco-autoassign-on-import", true);
@@ -255,7 +248,7 @@ function useTemplates(){
 }
 const DAYS = ["L","M","X","J","V","S","D"];
 function todayLetter(){
-  const d=new Date(); const n=d.getDay(); // 0=Domingo .. 6=Sabado
+  const d=new Date(); const n=d.getDay();
   return ["D","L","M","X","J","V","S"][n];
 }
 function matchPattern(text, patternRaw){
@@ -268,7 +261,6 @@ function matchPattern(text, patternRaw){
   if(p.startsWith("/") && p.toLowerCase().endsWith("/i")){
     try{ const re = new RegExp(p.slice(1,-2),"i"); return re.test(text); }catch{ return false; }
   }
-  // comodines *
   const up = p.toUpperCase();
   if(up==="*") return true;
   if(up.startsWith("*") && up.endsWith("*")) return textN.includes(up.slice(1,-1));
@@ -280,7 +272,6 @@ function dayAllowed(t){
   if(!t?.dias || !Array.isArray(t.dias) || t.dias.length===0) return true;
   return t.dias.includes(todayLetter());
 }
-// Sugerir muelle: devuelve el primer muelle de la regla aplicable que no esté en conflicto
 function suggestMuelleForRow(templates, ladoName, row, app){
   const destino = (row?.DESTINO||"").toString();
   const candidatos = (templates||[])
@@ -303,22 +294,16 @@ function suggestMuelleForRow(templates, ladoName, row, app){
 function applyTemplatesToLado(app, setApp, ladoName, templates){
   const rows = (app?.lados?.[ladoName]?.rows)||[];
   if(rows.length===0) return;
-
-  // No pisamos muelles ya rellenados; solo filas con MUELLE vacío
   const toAssign = rows.filter(r => String(r.MUELLE||"").trim()==="");
-
   if(toAssign.length===0) return;
 
-  const draft = JSON.parse(JSON.stringify(app)); // copia simple
+  const draft = JSON.parse(JSON.stringify(app));
   for(const r of toAssign){
     const mu = suggestMuelleForRow(templates, ladoName, r, draft);
     if(mu!=null){
-      // aplicar en draft (para que la siguiente validación use el estado ya asignado)
       const sideRows = draft.lados[ladoName].rows;
       const idx = sideRows.findIndex(x => x.id===r.id);
-      if(idx>=0){
-        sideRows[idx].MUELLE = String(mu);
-      }
+      if(idx>=0){ sideRows[idx].MUELLE = String(mu); }
     }
   }
   setApp(draft);
@@ -337,7 +322,6 @@ export default function MecoDockManager(){
   const [summary,setSummary]=useState({open:false,type:null});
   const muPrevRef = useRef({});
 
-  // Plantillas
   const { templates, setTemplates, autoOnImport, setAutoOnImport } = useTemplates();
 
   const dragFromIdx = useRef(null);
@@ -456,7 +440,6 @@ export default function MecoDockManager(){
         });
         const rows=best?.rows??[];
 
-        // Cargamos filas
         setApp(prev => {
           const base = {
             ...prev,
@@ -468,10 +451,9 @@ export default function MecoDockManager(){
               },
             },
           };
-          // AUTO-ASIGNACIÓN por plantillas al importar (opcional)
           if (autoOnImport) {
             const draft = JSON.parse(JSON.stringify(base));
-            applyTemplatesToLado(draft, (x)=>Object.assign(base,x), lado, templates); // aplica sobre 'base'
+            applyTemplatesToLado(draft, (x)=>Object.assign(base,x), lado, templates);
             return draft;
           }
           return base;
@@ -522,7 +504,6 @@ export default function MecoDockManager(){
 
   const activeRowsCount = (app?.lados?.[active]?.rows || []).length;
 
-  /* ====== Render ====== */
   const visibleRowsByLado = (lado)=>filteredRows(lado);
 
   return (
@@ -563,7 +544,6 @@ export default function MecoDockManager(){
                   <TabsTrigger value="Plantillas" className="px-3">Plantillas</TabsTrigger>
                 </TabsList>
 
-                {/* ======= Toolbar principal ======= */}
                 <div className="mt-3">
                   <ToolbarX
                     onImport={(f)=>importExcel(f,active)}
@@ -581,7 +561,6 @@ export default function MecoDockManager(){
                   />
                 </div>
 
-                {/* ======= Pestañas por lado ======= */}
                 {LADOS.map((n)=>{
                   const rows=(app?.lados?.[n]?.rows)||[];
                   const visible=visibleRowsByLado(n);
@@ -662,10 +641,7 @@ export default function MecoDockManager(){
 
                 {/* ======= Pestaña PLANTILLAS ======= */}
                 <TabsContent value="Plantillas" className="mt-3">
-                  <TemplatesTab
-                    templates={templates}
-                    setTemplates={setTemplates}
-                  />
+                  <TemplatesTab templates={templates} setTemplates={setTemplates} />
                 </TabsContent>
               </Tabs>
             </CardContent>
@@ -675,7 +651,7 @@ export default function MecoDockManager(){
           <DockRight app={app} setDockPanel={setDockPanel} dockPanel={dockPanel} />
         </div>
 
-        {/* Drawer muelles */}
+        {/* Drawer muelles (con bloque de "Carga aérea" para muelles 338–350) */}
         <DockDrawer
           app={app}
           dockPanel={dockPanel}
@@ -692,10 +668,10 @@ export default function MecoDockManager(){
             const t = {
               id: crypto.randomUUID(),
               lado: ladoName || "Todos",
-              pattern: dest,           // texto exacto
+              pattern: dest,
               muelles: [mu],
               prioridad: 10,
-              dias: [],                // todos los días
+              dias: [],
               activo: true,
             };
             setTemplates((prev)=>[t, ...(Array.isArray(prev)?prev:[])]);
@@ -718,8 +694,6 @@ export default function MecoDockManager(){
 /* ============================= Panel derecha ============================== */
 function DockRight({app,setDockPanel,dockPanel}){
   const docks=useMemo(()=>deriveDocks(app?.lados||{}),[app]);
-
-  // Icono aviso (≤5 min o rebasado SALIDA TOPE sin SALIDA REAL)
   function shouldShowTopeIcon(info){
     const row = info?.row;
     if(!row) return false;
@@ -727,7 +701,7 @@ function DockRight({app,setDockPanel,dockPanel}){
     if(salidaReal) return false;
     const dTope = parseFlexibleToDate(row["SALIDA TOPE"] || "");
     if(!dTope) return false;
-    const diff = minutesDiff(new Date(), dTope); // + => pasado; - => faltan minutos
+    const diff = minutesDiff(new Date(), dTope);
     return diff >= -SLA_TOPE_ICON_PREMIN;
   }
   function iconSeverity(info){
@@ -742,7 +716,6 @@ function DockRight({app,setDockPanel,dockPanel}){
     if(diff >= -SLA_TOPE_ICON_PREMIN) return "warn";
     return null;
   }
-
   const legend=(
     <div className="flex items-center gap-3 text-[11px] text-muted-foreground">
       <div className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded bg-emerald-500" /> Libre</div>
@@ -812,6 +785,7 @@ function DockDrawer({app,dockPanel,setDockPanel,updateRowDirect,commitDockValue,
 
   const { lado, rowId, dock } = dockPanel;
   const row = (lado && rowId) ? (app?.lados?.[lado]?.rows||[]).find(r=>r.id===rowId) : null;
+  const isAirDock = typeof dock === "number" && dock >= AIR_DOCK_MIN && dock <= AIR_DOCK_MAX;
 
   function marcarLlegadaAhora(){
     if(!lado || !row) return;
@@ -832,13 +806,52 @@ function DockDrawer({app,dockPanel,setDockPanel,updateRowDirect,commitDockValue,
     setField(lado, row.id, "SALIDA REAL", now);
   }
 
+  // ====== AIR ITEMS helpers (solo para muelles 338–350)
+  function airItems(rowObj){
+    const arr = rowObj?._AIR_ITEMS;
+    return Array.isArray(arr) ? arr : [];
+  }
+  function setAirItems(newArr){
+    if(!lado || !row) return;
+    updateRowDirect(lado, row.id, { _AIR_ITEMS: newArr });
+  }
+  function addAirItem(){
+    const list = airItems(row);
+    setAirItems([
+      ...list,
+      { id: crypto.randomUUID(), dest: "", m3: "", bx: "" }
+    ]);
+  }
+  function updateAirItem(id, patch){
+    const list = airItems(row);
+    const idx = list.findIndex(x=>x.id===id);
+    if(idx<0) return;
+    const next = [...list];
+    next[idx] = { ...next[idx], ...patch };
+    setAirItems(next);
+  }
+  function removeAirItem(id){
+    const list = airItems(row);
+    setAirItems(list.filter(x=>x.id!==id));
+  }
+  function totalsAir(list){
+    let m3=0, bx=0;
+    for(const it of list){
+      const m = parseFloat(String(it.m3||"").replace(",","."));
+      const b = parseInt(String(it.bx||"").replace(",","."));
+      if(!Number.isNaN(m)) m3 += m;
+      if(!Number.isNaN(b)) bx += b;
+    }
+    return { m3: Math.round(m3*100)/100, bx };
+  }
+
   return (
     <>
       <div className="fixed inset-0 bg-black/30 z-[9998]" onClick={()=>setDockPanel({open:false,dock:undefined,lado:undefined,rowId:undefined})}/>
       <div
         className="
           fixed right-0 top-0 h-screen
-          w-[400px] sm:w-[520px] md:w-[620px]
+          w-[400px] sm:w-[520px] md:w-[640px]
           bg-white z-[9999] shadow-2xl border-l pointer-events-auto
           flex flex-col
         "
@@ -850,7 +863,7 @@ function DockDrawer({app,dockPanel,setDockPanel,updateRowDirect,commitDockValue,
           <Button size="icon" variant="ghost" onClick={()=>setDockPanel({open:false,dock:undefined,lado:undefined,rowId:undefined})}><X className="w-5 h-5" /></Button>
         </div>
 
-        <div className="p-4 space-y-3 overflow-y-auto grow">
+        <div className="p-4 space-y-4 overflow-y-auto grow">
           {!lado || !rowId || !row ? (
             <div className="text-sm text-muted-foreground">Muelle libre o no hay fila asociada.</div>
           ) : (
@@ -858,7 +871,7 @@ function DockDrawer({app,dockPanel,setDockPanel,updateRowDirect,commitDockValue,
               <div className="grid grid-cols-2 gap-3">
                 <KV label="Lado" value={lado} />
                 <KV label="Matrícula" value={row.MATRICULA || "—"} />
-                <KV label="Destino" value={row.DESTINO || "—"} wrap />
+                <KV label="Destino (operativa)" value={row.DESTINO || "—"} wrap />
                 <div className="flex items-center justify-between">
                   <div className="text-sm text-muted-foreground">Estado</div>
                   {(row.ESTADO||"") ? <Badge className={`${estadoBadgeColor(row.ESTADO)} text-white`}>{row.ESTADO}</Badge> : <span className="text-slate-400 text-sm">—</span>}
@@ -916,6 +929,84 @@ function DockDrawer({app,dockPanel,setDockPanel,updateRowDirect,commitDockValue,
                   placeholder="Añade notas"
                 />
               </div>
+
+              {/* ============= BLOQUE CARGA AÉREA PARA MUELLES 338–350 ============= */}
+              {isAirDock && (
+                <div className="mt-2 border-t pt-3">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="font-semibold">Carga aérea (solo muelles {AIR_DOCK_MIN}–{AIR_DOCK_MAX})</div>
+                    <Button size="sm" onClick={addAirItem}>
+                      <Plus className="w-4 h-4 mr-2" />
+                      Añadir destino aéreo
+                    </Button>
+                  </div>
+
+                  <div className="overflow-auto">
+                    <div className="min-w-[560px]">
+                      <div className="grid grid-cols-[minmax(220px,1fr)_110px_110px_60px] gap-2 px-2 py-2 bg-slate-50 border rounded-t text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">
+                        <div>Destino</div>
+                        <div>m³</div>
+                        <div>bx</div>
+                        <div>Acc.</div>
+                      </div>
+
+                      {airItems(row).length===0 && (
+                        <div className="px-3 py-3 text-sm text-muted-foreground border-x border-b rounded-b">
+                          No hay destinos aéreos añadidos para este camión.
+                        </div>
+                      )}
+
+                      {airItems(row).length>0 && (
+                        <div className="border-x border-b rounded-b divide-y">
+                          {airItems(row).map(item=>(
+                            <div key={item.id} className="grid grid-cols-[minmax(220px,1fr)_110px_110px_60px] gap-2 px-2 py-2 items-center">
+                              <input
+                                className="h-9 w-full border rounded px-2 bg-white text-sm"
+                                placeholder="Destino aéreo (independiente del DESTINO general)"
+                                value={item.dest||""}
+                                onChange={(e)=>updateAirItem(item.id, { dest: e.target.value })}
+                              />
+                              <input
+                                className="h-9 w-full border rounded px-2 bg-white text-sm"
+                                placeholder="0.00"
+                                inputMode="decimal"
+                                value={item.m3??""}
+                                onChange={(e)=>updateAirItem(item.id, { m3: e.target.value })}
+                              />
+                              <input
+                                className="h-9 w-full border rounded px-2 bg-white text-sm"
+                                placeholder="0"
+                                inputMode="numeric"
+                                value={item.bx??""}
+                                onChange={(e)=>updateAirItem(item.id, { bx: e.target.value })}
+                              />
+                              <div className="flex items-center justify-center">
+                                <Button size="icon" variant="ghost" className="h-8 w-8" onClick={()=>removeAirItem(item.id)} title="Eliminar">
+                                  <X className="w-4 h-4" />
+                                </Button>
+                              </div>
+                            </div>
+                          ))}
+
+                          {/* Totales */}
+                          {(() => {
+                            const t = totalsAir(airItems(row));
+                            return (
+                              <div className="grid grid-cols-[minmax(220px,1fr)_110px_110px_60px] gap-2 px-2 py-2 bg-slate-50/70 items-center">
+                                <div className="text-sm font-medium text-right pr-2">Totales</div>
+                                <div className="text-sm font-semibold">{t.m3.toFixed(2)}</div>
+                                <div className="text-sm font-semibold">{t.bx}</div>
+                                <div />
+                              </div>
+                            );
+                          })()}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+              {/* =================================================================== */}
             </>
           )}
         </div>
@@ -971,7 +1062,6 @@ function SelectX({label,value,onChange,options}){ return (
 /* ===================== LÍNEA SUPERIOR DE AVISOS (SLA) ===================== */
 function AlertStrip({ topeCrit, topeWarn, onOpen }) {
   const hasAnyTope = (topeCrit + topeWarn) > 0;
-
   return (
     <div className={`mb-3 ${hasAnyTope ? "" : "opacity-70"}`}>
       <div className="flex flex-wrap items-center gap-2 text-sm">
@@ -1043,7 +1133,7 @@ function SummaryModal({open,type,data,onClose}){
     if(type==="INCIDENCIAS") return r.INCIDENCIAS || "—";
     if(type==="SLA_TOPE") return r._sla?.tip || r.ESTADO || "—";
     return r.ESTADO || "—";
-  };
+    };
 
   return (
     <>
@@ -1182,12 +1272,11 @@ function TemplatesTab({templates, setTemplates}){
       pattern: "",
       muelles: [],
       prioridad: 1,
-      dias: [],        // vacío => todos los días
+      dias: [],
       activo: true,
     };
     setTemplates((prev)=>[...(Array.isArray(prev)?prev:[]), t]);
   }
-
   function updateTemplate(id, patch){
     setTemplates((prev)=>{
       const arr = Array.isArray(prev)? [...prev] : [];
@@ -1196,13 +1285,11 @@ function TemplatesTab({templates, setTemplates}){
       return arr;
     });
   }
-
   function removeTemplate(id){
     const ok = confirm("¿Eliminar esta plantilla?");
     if(!ok) return;
     setTemplates((prev)=> (Array.isArray(prev)? prev.filter(x=>x.id!==id) : []));
   }
-
   function toggleDay(id, letter){
     setTemplates((prev)=>{
       const arr = Array.isArray(prev)? [...prev] : [];
@@ -1214,7 +1301,6 @@ function TemplatesTab({templates, setTemplates}){
       return arr;
     });
   }
-
   function importJson(file){
     const reader = new FileReader();
     reader.onload = (e)=>{
@@ -1227,7 +1313,7 @@ function TemplatesTab({templates, setTemplates}){
           pattern: t.pattern || "",
           muelles: (Array.isArray(t.muelles)? t.muelles.map(n=>Number(n)).filter(n=>Number.isFinite(n)) : []),
           prioridad: Number(t.prioridad||0),
-          dias: Array.isArray(t.dias)? t.dias.filter(x=>DAYS.includes(x)) : [],
+          dias: Array.isArray(t.dias)? t.dias.filter(x=>["L","M","X","J","V","S","D"].includes(x)) : [],
           activo: !!t.activo,
         }));
         setTemplates(cleaned);
@@ -1238,7 +1324,6 @@ function TemplatesTab({templates, setTemplates}){
     };
     reader.readAsText(file);
   }
-
   function exportJson(){
     const data = JSON.stringify(templates||[], null, 2);
     const blob = new Blob([data], {type:"application/json"});
