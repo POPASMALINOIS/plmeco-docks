@@ -1,0 +1,19 @@
+version: "3.9"
+services:
+  backend:
+    build: ./backend
+    container_name: plmeco-backend
+    env_file: ./backend/.env   # <-- este archivo se crea en el servidor, NO en el repo
+    ports:
+      - "4000:4000"
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+    container_name: plmeco-frontend
+    depends_on:
+      - backend
+    ports:
+      - "8080:80"
+    restart: unless-stopped
