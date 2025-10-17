@@ -506,18 +506,38 @@ export default function MecoDockManager(){
     return list.filter(r=>(r?.ESTADO||"")===filterEstado);
   }
 
-  // ======= EXPORTACIÓN XLSX (simple, sin estilos) =======
+  // ======= EXPORTACIÓN XLSX (simple, sin estilos) with AUTO-COLS =======
   function exportXLSX(lado, app, columnOrder){
     try{
       const headers = columnOrder;
       const rows = (app?.lados?.[lado]?.rows) || [];
+
+      // Construye Array-of-Arrays (AOA)
       const aoa = [
         headers,
         ...rows.map(r => headers.map(h => r?.[h] ?? "")),
       ];
+
       const ws = XLSX.utils.aoa_to_sheet(aoa);
+
+      // AUTO AJUSTE DE COLUMNAS: calcular ancho máximo por columna (en caracteres)
+      // Utiliza coerceCell para normalizar valores y evitar saltos de línea largos.
+      const colWidths = headers.map((h, colIdx) => {
+        let maxLen = String(h ?? "").length;
+        for (let r = 0; r < rows.length; r++) {
+          const raw = rows[r]?.[h];
+          const cellStr = coerceCell(raw);
+          if (cellStr.length > maxLen) maxLen = cellStr.length;
+        }
+        // Añade un padding razonable y limita el ancho para evitar columnas inmensas
+        const padded = Math.min(maxLen + 4, 60); // tope 60 caracteres, ajusta si quieres
+        return { wch: padded };
+      });
+
+      ws['!cols'] = colWidths;
+
       const wb = XLSX.utils.book_new();
-      const wsName = (lado || "Operativa").replace(/[\\/?*[\]]/g, "_").slice(0, 31);
+      const wsName = (lado || "Operativa").replace(/[\\\/\?\*\[\]]/g, "_").slice(0, 31);
       XLSX.utils.book_append_sheet(wb, ws, wsName);
       XLSX.writeFile(wb, `${wsName}.xlsx`);
     }catch(err){
@@ -979,7 +999,7 @@ function DockDrawer({app,dockPanel,setDockPanel,updateRowDirect,commitDockValue,
 
                 <div className="overflow-auto">
                   <div className="min-w-[560px]">
-                    <div className="grid grid-cols-[minmax(220px,1fr)_110px_110px_60px] gap-2 px-2 py-2 bg-slate-50 border rounded-t text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">
+                    <div className="grid grid-cols-[minmax(220px,1fr)_110px_110px_60px] gap-2 px-2 py-2 bg-slate-50 border rounded-t text-[11px] font-semibold text-muted-foreground uppercase trac[...]
                       <div>Destino</div>
                       <div>m³</div>
                       <div>bx</div>
@@ -1383,7 +1403,7 @@ function TemplatesTab({templates, setTemplates}){
       <CardContent>
         <div className="overflow-auto">
           <div className="min-w-[900px]">
-            <div className="grid grid-cols-[110px_150px_minmax(220px,1fr)_200px_110px_230px_90px] gap-2 px-2 py-2 bg-slate-50 border text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">
+            <div className="grid grid-cols-[110px_150px_minmax(220px,1fr)_200px_110px_230px_90px] gap-2 px-2 py-2 bg-slate-50 border text-[11px] font-semibold text-muted-foreground uppercase tra[...]
               <div>Activo</div>
               <div>Lado</div>
               <div>Destino (patrón)</div>
