@@ -1,3 +1,4 @@
+/* BEGIN FILE CONTENT */
 // src/components/MecoDockManager.jsx
 // App de gestión de muelles con plantillas, validación, panel lateral, etc.
 // Indicador de carga aérea: icono de avión en el botón del muelle si hay _AIR_ITEMS
@@ -84,13 +85,13 @@ function nowHHmmEuropeMadrid(){
 }
 function coerceCell(v){ if(v==null) return ""; if(v instanceof Date) return v.toISOString(); return String(v).replace(/\r?\n+/g," ").replace(/\s{2,}/g," ").trim(); }
 function normalizeEstado(v){
-  const raw=String(v??"{}").trim();
+  const raw=String(v??""").trim();
   if(raw===""||raw==="*"||raw==="-"||/^N\/?.test(raw)) return "";
   const up=raw.toUpperCase(); if(up==="OK"||up==="CARGANDO"||up==="ANULADO") return up; return up;
 }
 function parseFlexibleToDate(s){
-  const str=(s??"{}").toString().trim(); if(!str) return null;
-  const hm=/^(\d{1,2}):(\d{2})$/.exec(str);
+  const str=(s??""").toString().trim(); if(!str) return null;
+  const hm=/^\d{1,2}:\d{2}$/.exec(str);
   if(hm){ const now=new Date(); return new Date(now.getFullYear(),now.getMonth(),now.getDate(),Number(hm[1]),Number(hm[2]),0,0);} 
   const dmyhm=/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})[ T](\d{1,2}):(\d{2})$/.exec(str);
   if(dmyhm){ const dd=+dmyhm[1], mm=+dmyhm[2]-1; let yy=+dmyhm[3]; if(yy<100) yy+=2000; const hh=+dmyhm[4], mi=+dmyhm[5]; return new Date(yy,mm,dd,hh,mi,0,0);} 
@@ -169,8 +170,8 @@ function deriveDocks(lados){
     ((lados?.[ladoName]?.rows)||[]).forEach((row)=>{
       const muNum=Number(String(row?.MUELLE??"{}").trim());
       if(!Number.isFinite(muNum)||!DOCKS.includes(muNum)) return;
-      const llegadaReal=(row?.["LLEGADA REAL"]||"{}").trim();
-      const salidaReal=(row?.["SALIDA REAL"]||"{}").trim();
+      const llegadaReal=(row?.["LLEGADA REAL"]||"").trim();
+      const salidaReal=(row?.["SALIDA REAL"]||"").trim();
       let state="ESPERA"; if(llegadaReal) state="OCUPADO"; if(salidaReal) state="LIBRE";
       const incoming=state==="LIBRE"?{state:"LIBRE"}:{state,row,lado:ladoName};
       const prev=dockMap.get(muNum); const next=state==="LIBRE"?(prev||{state:"LIBRE"}):betterDockState(prev,incoming);
@@ -201,10 +202,10 @@ function isValidDockValue(val){ if(val===""||val==null) return true; const num=N
 function checkDockConflict(app,dockValue,currentLado,currentRowId){
   const num=Number(String(dockValue).trim()); if(!Number.isFinite(num)) return {conflict:false};
   for(const ladoName of Object.keys(app?.lados||{})){
-    for(const row of (app?.lados?.[ladoName]?.rows||[])){    
+    for(const row of (app?.lados?.[ladoName]?.rows||[])){
       if(row.id===currentRowId && ladoName===currentLado) continue;
-      const mu=Number(String(row?.MUELLE??"{}").trim()); if(mu!==num) continue;
-      const llegadaReal=(row?.["LLEGADA REAL"]||"{}").trim(); const salidaReal=(row?.["SALIDA REAL"]||"{}").trim();
+      const mu=Number(String(row?.MUELLE||"{}").trim()); if(mu!==num) continue;
+      const llegadaReal=(row?.["LLEGADA REAL"]||"").trim(); const salidaReal=(row?.["SALIDA REAL"]||"").trim();
       let state="ESPERA"; if(llegadaReal) state="OCUPADO"; if(salidaReal) state="LIBRE";
       if(state!="LIBRE") return {conflict:true, info:{lado:ladoName,row,estado:state}};
     }
@@ -216,7 +217,7 @@ function checkDockConflict(app,dockValue,currentLado,currentRowId){
 function getSLA(row){
   const now=new Date();
   const tope={level:null,diff:0};
-  const salidaReal=(row?.["SALIDA REAL"]||"{}").toString().trim();
+  const salidaReal=(row?.["SALIDA REAL"]||"").toString().trim();
   const salidaTope=parseFlexibleToDate(row?.["SALIDA TOPE"]||"");
   if(!salidaReal && salidaTope){
     const diffMin=minutesDiff(now,salidaTope);
@@ -238,7 +239,7 @@ function useTemplates(){
 }
 const DAYS = ["L","M","X","J","V","S","D"];
 function todayLetter(){
-  const d=new Date(); const n=d.getDay();
+  const d = new Date(); const n = d.getDay();
   return ["D","L","M","X","J","V","S"][n];
 }
 function matchPattern(text, patternRaw){
@@ -254,8 +255,8 @@ function matchPattern(text, patternRaw){
   const up = p.toUpperCase();
   if(up==="*") return true;
   if(up.startsWith("*") && up.endsWith("*")) return textN.includes(up.slice(1,-1));
-  if(up.startsWith("*")) return textN.endsWith(up.slice(1));
-  if(up.endsWith("*")) return textN.startsWith(up.slice(0,-1));
+  if(up.startsWith("*") ) return textN.endsWith(up.slice(1));
+  if(up.endsWith("*") ) return textN.startsWith(up.slice(0,-1));
   return textN===up;
 }
 function dayAllowed(t){
@@ -391,7 +392,7 @@ export default function MecoDockManager(){
   }
   function commitDockValue(lado, rowId, newValue){
     const prevValue = muPrevRef.current[rowId] ?? "";
-    const value = (newValue ?? "{}").toString().trim();
+    const value = (newValue ?? "").toString().trim();
     if(value===""){ updateRowDirect(lado,rowId,{MUELLE:""}); return; }
     if(!isValidDockValue(value)){
       alert(`El muelle "${newValue}" no es válido. Permitidos: ${DOCKS.join(", ")}.`);
@@ -403,8 +404,7 @@ export default function MecoDockManager(){
         `El muelle ${value} está ${info.estado} en ${info.lado}.
 `+
         `Matrícula: ${info.row.MATRICULA||"?"} · Destino: ${info.row.DESTINO||"?"}
-
-`+
+\n`+
         `¿Asignarlo igualmente?`
       );
       if(!ok){ updateRowDirect(lado,rowId,{MUELLE: prevValue}); return; }
@@ -525,7 +525,7 @@ export default function MecoDockManager(){
       // AUTO AJUSTE DE COLUMNAS: calcular ancho máximo por columna (en caracteres)
       // Utiliza coerceCell para normalizar valores y evitar saltos de línea largos.
       const colWidths = headers.map((h, colIdx) => {
-        let maxLen = String(h ?? "{}").length;
+        let maxLen = String(h ?? "").length;
         for (let r = 0; r < rows.length; r++) {
           const raw = rows[r]?.[h];
           const cellStr = coerceCell(raw);
@@ -642,12 +642,12 @@ export default function MecoDockManager(){
                                     return (
                                       <div key={h} className={`p-1 border-r border-slate-100/60 flex items-center ${bgClass}`}> 
                                         {isEstado ? (
-                                          <select className="h-8 w-full border rounded px-2 bg-transparent text-sm" value={(row?.ESTADO??"{}").toString()} onChange={(e)=>setField(n,row.id,"ESTADO",e.target.value)}>
+                                          <select className="h-8 w-full border rounded px-2 bg-transparent text-sm" value={(row?.ESTADO||"{}").toString()} onChange={(e)=>setField(n,row.id,"ESTADO",e.target.value)}>
                                             <option value="">Seleccionar</option>
                                             {CAMION_ESTADOS.map(opt=><option key={opt} value={opt}>{opt}</option>)}
                                           </select>
                                         ) : isInc ? (
-                                          <select className="h-8 w-full border rounded px-2 bg-transparent text-sm" value={(row?.INCIDENCIAS??"{}").toString()} onChange={(e)=>setField(n,row.id,"INCIDENCIAS",e.target.value)}>
+                                          <select className="h-8 w-full border rounded px-2 bg-transparent text-sm" value={(row?.INCIDENCIAS||"{}").toString()} onChange={(e)=>setField(n,row.id,"INCIDENCIAS",e.target.value)}>
                                             <option value="">Seleccionar</option>
                                             {INCIDENTES.map(opt=><option key={opt} value={opt}>{opt}</option>)}
                                           </select>
@@ -662,7 +662,7 @@ export default function MecoDockManager(){
                                           />
                                         ) : (
                                           <input className="h-8 w-full border rounded px-2 bg-transparent text-sm"
-                                            value={(row?.[h]??"{}").toString()}
+                                            value={(row?.[h]||"{}").toString()}
                                             onChange={(e)=>setField(n,row.id,h,e.target.value)}
                                           />
                                         )}
@@ -735,3 +735,5 @@ export default function MecoDockManager(){
     </TooltipProvider>
   );
 }
+
+/* END FILE CONTENT */
