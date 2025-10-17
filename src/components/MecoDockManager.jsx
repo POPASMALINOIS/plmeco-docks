@@ -1,4 +1,4 @@
-// MecoDockManager.jsx — Fila completa coloreada con tonos suaves + inputs transparentes (incluye botones Llegada/Salida)
+// MecoDockManager.jsx — Colorear solo hasta "SALIDA TOPE" (incluida) con tonos suaves
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -15,7 +15,7 @@ const SLA_WAIT_CRIT_MIN = 30;
 const SLA_TOPE_WARN_MIN = 15;
 /* ============================================================== */
 
-// Muelles permitidos (actualizado): 312–357 (sin 358) y 359–370, con añadidos 338–350 y 370
+// Muelles permitidos (actualizado)
 const DOCKS = [
   312,313,314,315,316,317,318,319,320,321,322,323,324,325,326,327,328,329,330,331,332,333,334,335,336,337,
   338,339,340,341,342,343,344,345,346,347,348,349,350,
@@ -40,6 +40,12 @@ const DEFAULT_ORDER = [
   "MATRICULA","LLEGADA","SALIDA","SALIDA TOPE","OBSERVACIONES","INCIDENCIAS","ESTADO",
 ];
 const EXPECTED_KEYS = [...new Set([...BASE_HEADERS, ...EXTRA_HEADERS])];
+
+/* === NUEVO: columnas que se colorean hasta "SALIDA TOPE" (incluida) === */
+const COLOR_UP_TO = new Set([
+  "TRANSPORTISTA","MATRICULA","DESTINO","MUELLE","PRECINTO",
+  "LLEGADA","LLEGADA REAL","SALIDA","SALIDA REAL","SALIDA TOPE",
+]);
 
 /* ==================== Utils ==================== */
 function norm(s) {
@@ -92,17 +98,16 @@ const HEADER_CELL_CLASS = "bg-slate-50 px-1 py-0.5 border-r border-slate-200 sel
 const HEADER_TEXT_CLASS = "text-[9px] leading-none font-semibold text-muted-foreground uppercase tracking-wide";
 
 /* ==================== Anchos forzados en PX ==================== */
-const TIME_COLS = new Set(["LLEGADA","LLEGADA REAL","SALIDA","SALIDA REAL","SALIDA TOPE"]); // HH:mm
+const TIME_COLS = new Set(["LLEGADA","LLEGADA REAL","SALIDA","SALIDA REAL","SALIDA TOPE"]);
 const PX_TIME = 80;           // LLEGADA y SALIDA
 const PX_TIME_REAL = 100;     // LLEGADA REAL y SALIDA REAL
 const PX_TIME_TOPE = 100;     // SALIDA TOPE
 const PX_MUELLE = 90;         // MUELLE
 const PX_ESTADO = 130;        // ESTADO
 
-// Ajustes columnas
-const PX_TRANSPORTISTA = 160; // reducido
-const PX_MATRICULA = 120;     // reducido
-const PX_DESTINO = 360;       // aumentado
+const PX_TRANSPORTISTA = 160;
+const PX_MATRICULA = 120;
+const PX_DESTINO = 360;
 const PX_PRECINTO = 120;
 const PX_OBSERVACIONES = 260;
 
@@ -120,7 +125,7 @@ const FIXED_PX = {
   "SALIDA REAL": PX_TIME_REAL,
   "SALIDA TOPE": PX_TIME_TOPE,
 };
-const ACTIONS_PX = 44; // columna Acciones
+const ACTIONS_PX = 44;
 
 function px(n){ return `${Math.max(40, Math.floor(n))}px`; }
 function computeColumnTemplate(_rows, order){
@@ -172,14 +177,13 @@ function deriveDocks(lados){
 function dockColor(state){ if(state==="LIBRE")return "bg-emerald-500"; if(state==="ESPERA")return "bg-amber-500"; return "bg-red-600"; }
 function estadoBadgeColor(estado){ if(estado==="ANULADO")return "bg-red-600"; if(estado==="CARGANDO")return "bg-amber-500"; if(estado==="OK")return "bg-emerald-600"; return "bg-slate-400"; }
 
-/* Tonos suaves para toda la fila */
-function rowColorByEstado(estado){
-  if(estado==="ANULADO") return "bg-rose-50";      // rojo muy suave
-  if(estado==="CARGANDO") return "bg-amber-50";    // ámbar muy suave
-  if(estado==="OK") return "bg-emerald-50";        // verde muy suave
+/* Tonos suaves SOLO por celda (hasta "SALIDA TOPE") */
+function cellBgByEstado(estado){
+  if(estado==="ANULADO") return "bg-rose-50";
+  if(estado==="CARGANDO") return "bg-amber-50";
+  if(estado==="OK") return "bg-emerald-50";
   return "";
 }
-/* Borde lateral suave para acento */
 function rowAccentBorder(estado){
   if(estado==="ANULADO") return "border-l-4 border-rose-300";
   if(estado==="CARGANDO") return "border-l-4 border-amber-300";
@@ -252,16 +256,10 @@ export default function MecoDockManager(){
   const [dockPanel,setDockPanel]=useState({open:false,dock:undefined,lado:undefined,rowId:undefined});
   const [importInfo,setImportInfo]=useState(null);
 
-  // Orden columnas (persistente)
   const [columnOrder,setColumnOrder]=useLocalStorage("meco-colorder",DEFAULT_ORDER);
-
-  // Estado para el modal de resumen
   const [summary,setSummary]=useState({open:false,type:null});
+  const muPrevRef = useRef({});
 
-  // refs para edición de muelle (guardar valor previo y validar en blur)
-  const muPrevRef = useRef({}); // { [rowId]: prevValue }
-
-  // DnD encabezados
   const dragFromIdx = useRef(null);
   function onHeaderDragStart(e, idx){
     dragFromIdx.current = idx;
@@ -323,15 +321,10 @@ export default function MecoDockManager(){
   function commitDockValue(lado, rowId, newValue){
     const prevValue = muPrevRef.current[rowId] ?? "";
     const value = (newValue ?? "").toString().trim();
-
-    if(value===""){
-      updateRowDirect(lado,rowId,{MUELLE:""});
-      return;
-    }
+    if(value===""){ updateRowDirect(lado,rowId,{MUELLE:""}); return; }
     if(!isValidDockValue(value)){
       alert(`El muelle "${newValue}" no es válido. Permitidos: ${DOCKS.join(", ")}.`);
-      updateRowDirect(lado,rowId,{MUELLE: prevValue});
-      return;
+      updateRowDirect(lado,rowId,{MUELLE: prevValue}); return;
     }
     const {conflict,info}=checkDockConflict(app,value,lado,rowId);
     if(conflict){
@@ -340,10 +333,7 @@ export default function MecoDockManager(){
         `Matrícula: ${info.row.MATRICULA||"?"} · Destino: ${info.row.DESTINO||"?"}\n\n`+
         `¿Asignarlo igualmente?`
       );
-      if(!ok){
-        updateRowDirect(lado,rowId,{MUELLE: prevValue});
-        return;
-      }
+      if(!ok){ updateRowDirect(lado,rowId,{MUELLE: prevValue}); return; }
     }
     updateRowDirect(lado,rowId,{MUELLE:value});
   }
@@ -450,7 +440,6 @@ export default function MecoDockManager(){
           </div>
         </header>
 
-        {/* Avisos SLA arriba */}
         <AlertStrip
           waitCrit={summaryData.SLA_WAIT.crit}
           waitWarn={summaryData.SLA_WAIT.warn}
@@ -459,7 +448,6 @@ export default function MecoDockManager(){
           onOpen={(type)=>setSummary({open:true,type})}
         />
 
-        {/* Resumen superior */}
         <SummaryBar data={summaryData} onOpen={(type)=>setSummary({open:true,type})} />
 
         <div className="grid gap-3 mt-3" style={{ gridTemplateColumns: "minmax(0,1fr) 290px" }}>
@@ -501,11 +489,8 @@ export default function MecoDockManager(){
                     <TabsContent key={n} value={n} className="mt-3">
                       <div className="border rounded-xl overflow-hidden">
                         <div className="overflow-auto max-h-[84vh]">
-                          {/* Header de la tabla */}
-                          <div
-                            className="grid sticky top-0 z-10"
-                            style={{gridTemplateColumns:gridTemplate, minWidth: "100%"}}
-                          >
+                          {/* Header */}
+                          <div className="grid sticky top-0 z-10" style={{gridTemplateColumns:gridTemplate, minWidth:"100%"}}>
                             {columnOrder.map((h,idx)=>(
                               <HeaderCell
                                 key={h}
@@ -530,11 +515,13 @@ export default function MecoDockManager(){
                               return (
                                 <Tooltip key={row.id}>
                                   <TooltipTrigger asChild>
-                                    <div className={`grid border-t ${rowColorByEstado(estado)} ${rowAccentBorder(estado)} border-slate-200 ${outline}`} style={{gridTemplateColumns:gridTemplate, minWidth: "100%"}}>
+                                    {/* NOTA: ya no aplicamos fondo a toda la fila; solo a celdas de COLOR_UP_TO */}
+                                    <div className={`grid border-t ${rowAccentBorder(estado)} border-slate-200 ${outline}`} style={{gridTemplateColumns:gridTemplate, minWidth: "100%"}}>
                                       {columnOrder.map((h)=>{
                                         const isEstado=h==="ESTADO", isInc=h==="INCIDENCIAS", isMuelle=h==="MUELLE";
+                                        const bgClass = COLOR_UP_TO.has(h) ? cellBgByEstado(estado) : "";
                                         return (
-                                          <div key={h} className="p-1 border-r border-slate-100/60 flex items-center">
+                                          <div key={h} className={`p-1 border-r border-slate-100/60 flex items-center ${bgClass}`}>
                                             {isEstado ? (
                                               <select className="h-8 w-full border rounded px-2 bg-transparent text-sm" value={(row?.ESTADO??"").toString()} onChange={(e)=>setField(n,row.id,"ESTADO",e.target.value)}>
                                                 <option value="">Seleccionar</option>
@@ -656,7 +643,6 @@ function DockDrawer({app,dockPanel,setDockPanel,updateRowDirect,commitDockValue,
   const { lado, rowId, dock } = dockPanel;
   const row = (lado && rowId) ? (app?.lados?.[lado]?.rows||[]).find(r=>r.id===rowId) : null;
 
-  // Acciones rápidas: llegada/salida ahora (HH:mm Europe/Madrid)
   function marcarLlegadaAhora(){
     if(!lado || !row) return;
     const now = nowHHmmEuropeMadrid();
@@ -709,7 +695,6 @@ function DockDrawer({app,dockPanel,setDockPanel,updateRowDirect,commitDockValue,
                 </div>
               </div>
 
-              {/* Botones rápidos */}
               <div className="flex items-center gap-2 pt-1">
                 <Button onClick={marcarLlegadaAhora} className="h-9">
                   <Truck className="w-4 h-4 mr-2" />
