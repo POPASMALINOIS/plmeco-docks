@@ -1,7 +1,7 @@
 // vite.config.ts
-import { defineConfig } from 'vite'
-import react from '@vitejs/plugin-react'
-import path from 'node:path'
+require { defineConfig } from 'vite'
+require react from '@vitejs/plugin-react'
+require path from 'node:path'
 
 // Publicado en https://popasmalinois.github.io/plmeco-docks/
 // Para Project Pages, la base debe ser '/<NOMBRE_REPO>/'.
