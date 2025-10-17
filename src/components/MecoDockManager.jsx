@@ -1,4 +1,4 @@
-// MecoDockManager.jsx — PDF export, sin CSV, y sin avisos por llegada tardía (solo SLA Tope)
+// MecoDockManager.jsx — sin PDF, sin CSV, con aviso (triángulo) en muelles si SALIDA TOPE ≤5 min o rebasada
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -8,12 +8,13 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { Download, FileUp, Plus, Trash2, X, AlertTriangle, GripVertical, RefreshCw, Truck } from "lucide-react";
 import * as XLSX from "xlsx";
 import { motion } from "framer-motion";
-import jsPDF from "jspdf";
-import "jspdf-autotable";
 
 /* ========================= PARÁMETROS SLA ====================== */
-// Eliminamos SLA de espera (llegada tardía). Solo usamos SLA_TOPE.
+// Solo SLA de SALIDA TOPE en la app.
+// Umbral para barra superior:
 const SLA_TOPE_WARN_MIN = 15;
+// Umbral para ICONO en los muelles del panel lateral:
+const SLA_TOPE_ICON_PREMIN = 5;
 /* ============================================================== */
 
 // Muelles permitidos (actualizado)
@@ -219,8 +220,7 @@ function checkDockConflict(app,dockValue,currentLado,currentRowId){
 }
 
 /* =============================== SLA helpers =============================== */
-// ❗️ Eliminamos cualquier cálculo/aviso ligado a llegadas tardías.
-// Solo calculamos SLA de SALIDA TOPE.
+// Solo SLA de SALIDA TOPE.
 function getSLA(row){
   const now=new Date();
   const tope={level:null,diff:0};
@@ -230,7 +230,7 @@ function getSLA(row){
     const diffMin=minutesDiff(now,salidaTope);
     tope.diff=diffMin;
     if(diffMin>0) tope.level="crit";         // ya superado el tope
-    else if(diffMin>=-SLA_TOPE_WARN_MIN) tope.level="warn"; // cerca del tope
+    else if(diffMin>=-SLA_TOPE_WARN_MIN) tope.level="warn"; // cerca del tope (umbral general 15')
   }
   const parts=[];
   if(tope.level==="crit") parts.push(`Salida tope superada (+${tope.diff} min)`);
@@ -296,12 +296,17 @@ export default function MecoDockManager(){
       ANULADO: all.filter(r=>is(r.ESTADO,"ANULADO")),
       INCIDENCIAS: all.filter(r=>(r?.INCIDENCIAS||"").trim()!==""),
       total: all.length,
-      // Sin SLA_WAIT
       SLA_TOPE: { warn: topeWarn, crit: topeCrit, rows: topeRows },
     };
   },[app]);
 
   /* ====== Helpers CRUD ====== */
+  function withDockAssignStamp(prevRow,nextRow){
+    const prevDock=(prevRow?.MUELLE??"").toString().trim();
+    const nextDock=(nextRow?.MUELLE??"").toString().trim();
+    if(nextDock && (!prevDock || prevDock!==nextDock)) return {...nextRow,_ASIG_TS:new Date().toISOString()};
+    return nextRow;
+  }
   function updateRowDirect(lado,id,patch){
     setApp(prev=>{
       const prevRows = prev?.lados?.[lado]?.rows || [];
@@ -470,7 +475,6 @@ export default function MecoDockManager(){
                     onClear={()=>clearLado(active)}
                     filterEstado={filterEstado}
                     setFilterEstado={setFilterEstado}
-                    onExportPDF={()=>exportPDF(active,app,columnOrder)}
                     onExportXLSX={()=>exportXLSX(active,app,columnOrder)}
                     onResetCache={()=>{ try{localStorage.removeItem("meco-app"); localStorage.removeItem("meco-colorder");}catch(e){} window.location.reload(); }}
                     activeLadoName={active}
@@ -598,6 +602,31 @@ export default function MecoDockManager(){
 /* ============================= Panel derecha ============================== */
 function DockRight({app,setDockPanel,dockPanel}){
   const docks=useMemo(()=>deriveDocks(app?.lados||{}),[app]);
+
+  // ⚠️ Calcula si un muelle debe mostrar el icono de aviso (≤5 min o rebasado SALIDA TOPE sin SALIDA REAL)
+  function shouldShowTopeIcon(info){
+    const row = info?.row;
+    if(!row) return false;
+    const salidaReal = (row["SALIDA REAL"]||"").toString().trim();
+    if(salidaReal) return false; // ya salió
+    const dTope = parseFlexibleToDate(row["SALIDA TOPE"] || "");
+    if(!dTope) return false;
+    const diff = minutesDiff(new Date(), dTope); // + => pasado; - => faltan minutos
+    return diff >= -SLA_TOPE_ICON_PREMIN; // faltan ≤5 min o pasado
+  }
+  function iconSeverity(info){
+    const row = info?.row;
+    if(!row) return null;
+    const salidaReal = (row["SALIDA REAL"]||"").toString().trim();
+    if(salidaReal) return null;
+    const dTope = parseFlexibleToDate(row["SALIDA TOPE"] || "");
+    if(!dTope) return null;
+    const diff = minutesDiff(new Date(), dTope);
+    if(diff > 0) return "crit";      // rebasado
+    if(diff >= -SLA_TOPE_ICON_PREMIN) return "warn"; // en ventana de 5'
+    return null;
+  }
+
   const legend=(
     <div className="flex items-center gap-3 text-[11px] text-muted-foreground">
       <div className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded bg-emerald-500" /> Libre</div>
@@ -614,15 +643,45 @@ function DockRight({app,setDockPanel,dockPanel}){
       <CardContent className="max-h-[84vh] overflow-auto">
         <div className="grid grid-cols-2 xs:grid-cols-3 gap-2">
           {DOCKS.map((d)=>{
-            const info=docks.get(d)||{state:"LIBRE"}; const color=dockColor(info.state); const label=`${d}`;
-            const tooltip=info.row ? `${label} • ${info.row.MATRICULA||"?"} • ${info.row.DESTINO||"?"} • ${(info.row.ESTADO||"")}` : `${label} • Libre`;
+            const info=docks.get(d)||{state:"LIBRE"};
+            const color=dockColor(info.state);
+            const label=`${d}`;
+            const tipBase = info.row
+              ? `${label} • ${info.row.MATRICULA||"?"} • ${info.row.DESTINO||"?"} • ${(info.row.ESTADO||"") || "—"}`
+              : `${label} • Libre`;
+
+            // Decidir icono
+            const showIcon = shouldShowTopeIcon(info);
+            const sev = iconSeverity(info); // "crit" | "warn" | null
+            const iconTitle = sev==="crit" ? "SALIDA TOPE rebasada" : "SALIDA TOPE en ≤5 min";
+
             const btn=(
-              <motion.button whileTap={{scale:0.96}} onClick={()=>setDockPanel({open:true,dock:d,lado:info.lado,rowId:info.row?.id})} className={`h-9 rounded-xl text-white text-sm font-semibold shadow ${color}`}>
+              <motion.button
+                whileTap={{scale:0.96}}
+                onClick={()=>setDockPanel({open:true,dock:d,lado:info.lado,rowId:info.row?.id})}
+                className={`relative h-9 rounded-xl text-white text-sm font-semibold shadow ${color} px-2`}
+                title={tipBase}
+              >
                 {label}
+                {showIcon && (
+                  <span
+                    className={`absolute -top-1 -right-1 inline-flex items-center justify-center w-5 h-5 rounded-full border bg-white shadow
+                      ${sev==="crit" ? "border-red-500" : "border-amber-400"}`}
+                    title={iconTitle}
+                  >
+                    <AlertTriangle className={`w-3.5 h-3.5 ${sev==="crit" ? "text-red-600" : "text-amber-500"}`} />
+                  </span>
+                )}
               </motion.button>
             );
-            return dockPanel?.open ? <div key={d}>{btn}</div> : (
-              <Tooltip key={d}><TooltipTrigger asChild>{btn}</TooltipTrigger><TooltipContent><p>{tooltip}</p></TooltipContent></Tooltip>
+
+            return dockPanel?.open ? (
+              <div key={d}>{btn}</div>
+            ) : (
+              <Tooltip key={d}>
+                <TooltipTrigger asChild>{btn}</TooltipTrigger>
+                <TooltipContent><p>{tipBase}</p></TooltipContent>
+              </Tooltip>
             );
           })}
         </div>
@@ -802,7 +861,7 @@ function AlertStrip({ topeCrit, topeWarn, onOpen }) {
           <AlertTriangle className="w-4 h-4" /> Avisos SLA:
         </span>
 
-        {/* ✅ ÚNICO BOTÓN: SLA Tope */}
+        {/* ÚNICO BOTÓN: SLA Tope */}
         <button
           onClick={()=>onOpen("SLA_TOPE")}
           className="flex items-center gap-2 px-2 py-1 rounded-full bg-red-100 text-red-800 border border-red-200 hover:bg-red-200 transition"
@@ -823,7 +882,7 @@ function AlertStrip({ topeCrit, topeWarn, onOpen }) {
   );
 }
 
-/* ==================== Barra de resumen (sin SLA Espera) =================== */
+/* ==================== Barra de resumen =================== */
 function SummaryBar({data,onOpen}){
   const cards = [
     { key:"OK", title:"OK", count:data.OK.length, color:"bg-emerald-600", sub:"Camiones en OK" },
@@ -898,7 +957,7 @@ function SummaryModal({open,type,data,onClose}){
 /* ============================ Toolbar & Export ============================ */
 function ToolbarX({
   onImport,onAddRow,onClear,filterEstado,setFilterEstado,
-  onExportPDF,onExportXLSX,onResetCache,
+  onExportXLSX,onResetCache,
   activeLadoName, activeRowsCount
 }){
   const fileRef=useRef(null);
@@ -938,10 +997,7 @@ function ToolbarX({
       <Button size="sm" variant="secondary" onClick={()=>fileRef.current && fileRef.current.click()}>
         <FileUp className="mr-2 h-4 w-4" /> Importar Excel
       </Button>
-      {/* CSV eliminado */}
-      <Button size="sm" onClick={onExportPDF}>
-        <Download className="mr-2 h-4 w-4" /> Exportar PDF
-      </Button>
+      {/* CSV eliminado · PDF eliminado */}
       <Button size="sm" onClick={onExportXLSX} variant="outline">
         <Download className="mr-2 h-4 w-4" /> Exportar Excel (.xlsx)
       </Button>
@@ -968,34 +1024,6 @@ function ToolbarX({
       </div>
     </div>
   );
-}
-
-function exportPDF(lado,app,columnOrder){
-  const rows = (app?.lados?.[lado]?.rows) || [];
-  const headers = columnOrder;
-  const body = rows.map(r => headers.map(h => (r?.[h] ?? "").toString()));
-
-  const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "A4" });
-
-  // Título
-  const ts = new Date();
-  const pad2 = (n)=>String(n).padStart(2,"0");
-  const title = `Operativa ${lado} · ${ts.getFullYear()}-${pad2(ts.getMonth()+1)}-${pad2(ts.getDate())} ${pad2(ts.getHours())}:${pad2(ts.getMinutes())}`;
-
-  doc.setFontSize(12);
-  doc.text(title, 40, 32);
-
-  doc.autoTable({
-    startY: 48,
-    head: [headers],
-    body,
-    styles: { fontSize: 8, cellPadding: 3, overflow: "linebreak" },
-    headStyles: { fillColor: [240, 244, 248], textColor: 20, fontStyle: "bold" },
-    alternateRowStyles: { fillColor: [250, 250, 250] },
-    margin: { left: 40, right: 40 },
-  });
-
-  doc.save(`${lado.replace(/\s+/g,"_")}.pdf`);
 }
 
 function exportXLSX(lado,app,columnOrder){
