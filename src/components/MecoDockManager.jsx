@@ -1,11 +1,11 @@
-// MecoDockManager.jsx — Sin Login ni Subir/Cargar red · Botones operativos · SALIDA REAL/TOPE 100px · Edición MUELLE en blur
+// MecoDockManager.jsx — Dock Drawer con botón "Llegada" (camión) que graba LLEGADA REAL (HH:mm Europe/Madrid)
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { Download, FileUp, Plus, Trash2, X, AlertTriangle, GripVertical, RefreshCw } from "lucide-react";
+import { Download, FileUp, Plus, Trash2, X, AlertTriangle, GripVertical, RefreshCw, Truck } from "lucide-react";
 import * as XLSX from "xlsx";
 import { motion } from "framer-motion";
 
@@ -60,6 +60,14 @@ function mapHeader(name){ const n=norm(name); return HEADER_ALIASES[n] || (name?
 function nowISO(){
   const d=new Date(); const tz=Intl.DateTimeFormat().resolvedOptions().timeZone;
   try{ return new Intl.DateTimeFormat("es-ES",{timeZone:tz,dateStyle:"short",timeStyle:"medium"}).format(d);}catch{ return d.toLocaleString();}
+}
+function nowHHmmEuropeMadrid(){
+  try{
+    return new Intl.DateTimeFormat("es-ES",{ timeZone:"Europe/Madrid", hour:"2-digit", minute:"2-digit", hour12:false }).format(new Date());
+  }catch{
+    const d=new Date(); const hh=String(d.getHours()).padStart(2,"0"); const mm=String(d.getMinutes()).padStart(2,"0");
+    return `${hh}:${mm}`;
+  }
 }
 function coerceCell(v){ if(v==null) return ""; if(v instanceof Date) return v.toISOString(); return String(v).replace(/\r?\n+/g," ").replace(/\s{2,}/g," ").trim(); }
 function normalizeEstado(v){
@@ -638,13 +646,24 @@ function DockDrawer({app,dockPanel,setDockPanel,updateRowDirect,commitDockValue,
   const { lado, rowId, dock } = dockPanel;
   const row = (lado && rowId) ? (app?.lados?.[lado]?.rows||[]).find(r=>r.id===rowId) : null;
 
+  // Acción: marcar llegada ahora (HH:mm Europe/Madrid)
+  function marcarLlegadaAhora(){
+    if(!lado || !row) return;
+    const now = nowHHmmEuropeMadrid();
+    if((row["LLEGADA REAL"]||"").trim()!==""){
+      const ok = confirm(`Esta fila ya tiene LLEGADA REAL = "${row["LLEGADA REAL"]}".\n¿Quieres sobrescribirla por ${now}?`);
+      if(!ok) return;
+    }
+    setField(lado, row.id, "LLEGADA REAL", now);
+  }
+
   return (
     <>
       <div className="fixed inset-0 bg-black/30 z-[9998]" onClick={()=>setDockPanel({open:false,dock:undefined,lado:undefined,rowId:undefined})}/>
       <div
         className="
           fixed right-0 top-0 h-screen
-          w-[400px] sm:w-[520px] md:w-[600px]
+          w-[400px] sm:w-[520px] md:w-[620px]
           bg-white z-[9999] shadow-2xl border-l pointer-events-auto
           flex flex-col
         "
@@ -669,6 +688,15 @@ function DockDrawer({app,dockPanel,setDockPanel,updateRowDirect,commitDockValue,
                   <div className="text-sm text-muted-foreground">Estado</div>
                   {(row.ESTADO||"") ? <Badge className={`${estadoBadgeColor(row.ESTADO)} text-white`}>{row.ESTADO}</Badge> : <span className="text-slate-400 text-sm">—</span>}
                 </div>
+              </div>
+
+              {/* Botón rápido de llegada */}
+              <div className="flex items-center gap-2 pt-1">
+                <Button onClick={marcarLlegadaAhora} className="h-9">
+                  <Truck className="w-4 h-4 mr-2" />
+                  Llegada
+                </Button>
+                <div className="text-xs text-muted-foreground">Marca la <b>llegada real</b> con la hora actual (HH:mm).</div>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
@@ -778,7 +806,7 @@ function AlertStrip({ waitCrit, waitWarn, topeCrit, topeWarn, onOpen }) {
           <span className="text-[11px] px-1 rounded bg-red-300 text-red-900">Crit: {topeCrit}</span>
           <span className="text-[11px] px-1 rounded bg-amber-200 text-amber-800">Aviso: {topeWarn}</span>
         </button>
-        {!hasAny && <span className="text-xs text-emerald-700 bg-emerald-100 border border-emerald-200 px-2 py-0.5 rounded-full">Sin avisos SLA en este momento</span>}
+        {!hasAny && <span className="text-xs text-emerald-700 bg-emerald-100 border-emerald-200 border px-2 py-0.5 rounded-full">Sin avisos SLA en este momento</span>}
       </div>
     </div>
   );
