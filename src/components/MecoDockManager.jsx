@@ -1,7 +1,7 @@
 // src/components/MecoDockManager.jsx
 // App de gestión de muelles con plantillas, validación, panel lateral, etc.
 // + “Carga aérea” (destinos/m³/bx con totales) en TODOS los muelles
-// + Badge m³/bx en cada botón de muelle cuando existan items de carga aérea
+// + Badge m³/bx en botón de muelle (reposicionado para no tapar el número)
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -318,8 +318,7 @@ function airTotalsFromRow(row){
     if(!Number.isNaN(m)) m3 += m;
     if(!Number.isNaN(b)) bx += b;
   }
-  // 1 decimal para el badge
-  return { m3: Math.round(m3*10)/10, bx: Math.round(bx) };
+  return { m3: Math.round(m3*10)/10, bx: Math.round(bx) }; // 1 decimal m³
 }
 
 /* ============================== Componente ================================ */
@@ -759,7 +758,7 @@ function DockRight({app,setDockPanel,dockPanel}){
             const sev = iconSeverity(info);
             const iconTitle = sev==="crit" ? "SALIDA TOPE rebasada" : "SALIDA TOPE en ≤5 min";
 
-            // Badge de carga aérea (totales)
+            // Badge de carga aérea (totales) — reposicionado top-left para no tapar el número
             let airBadge = null;
             if (info?.row) {
               const totals = airTotalsFromRow(info.row);
@@ -768,7 +767,7 @@ function DockRight({app,setDockPanel,dockPanel}){
                 airBadge = (
                   <span
                     title={`${totals.m3} m³ / ${totals.bx} bx`}
-                    className="absolute bottom-0.5 right-0.5 text-[10px] px-1.5 py-0.5 rounded bg-white/95 border border-slate-300 text-slate-700 shadow"
+                    className="absolute top-0.5 left-0.5 text-[9px] px-1 py-0.5 rounded bg-white/95 border border-slate-300 text-slate-700 shadow pointer-events-none"
                   >
                     {totals.m3}m³/{totals.bx}bx
                   </span>
