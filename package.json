@@ -9,8 +9,6 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "exceljs": "^4.4.0",
-    "file-saver": "^2.0.5",
     "framer-motion": "^11.0.0",
     "lucide-react": "^0.460.0",
     "react": "^18.2.0",
@@ -18,9 +16,9 @@
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.1",
     "@types/react": "^18.2.38",
     "@types/react-dom": "^18.2.16",
-    "@vitejs/plugin-react": "^4.3.1",
     "autoprefixer": "^10.4.20",
     "postcss": "^8.4.41",
     "tailwindcss": "^3.4.13",
