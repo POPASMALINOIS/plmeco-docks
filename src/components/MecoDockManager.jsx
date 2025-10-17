@@ -1,4 +1,4 @@
-// MecoDockManager.jsx — Dock Drawer con botones "Llegada" y "Salida" (HH:mm Europe/Madrid)
+// MecoDockManager.jsx — Fila completa coloreada con tonos suaves + inputs transparentes (incluye botones Llegada/Salida)
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -171,8 +171,21 @@ function deriveDocks(lados){
 }
 function dockColor(state){ if(state==="LIBRE")return "bg-emerald-500"; if(state==="ESPERA")return "bg-amber-500"; return "bg-red-600"; }
 function estadoBadgeColor(estado){ if(estado==="ANULADO")return "bg-red-600"; if(estado==="CARGANDO")return "bg-amber-500"; if(estado==="OK")return "bg-emerald-600"; return "bg-slate-400"; }
-function rowColorByEstado(estado){ if(estado==="ANULADO")return "bg-red-200"; if(estado==="CARGANDO")return "bg-amber-200"; if(estado==="OK")return "bg-emerald-200"; return ""; }
-function rowAccentBorder(estado){ if(estado==="ANULADO")return "border-l-4 border-red-400"; if(estado==="CARGANDO")return "border-l-4 border-amber-400"; if(estado==="OK")return "border-l-4 border-emerald-400"; return ""; }
+
+/* Tonos suaves para toda la fila */
+function rowColorByEstado(estado){
+  if(estado==="ANULADO") return "bg-rose-50";      // rojo muy suave
+  if(estado==="CARGANDO") return "bg-amber-50";    // ámbar muy suave
+  if(estado==="OK") return "bg-emerald-50";        // verde muy suave
+  return "";
+}
+/* Borde lateral suave para acento */
+function rowAccentBorder(estado){
+  if(estado==="ANULADO") return "border-l-4 border-rose-300";
+  if(estado==="CARGANDO") return "border-l-4 border-amber-300";
+  if(estado==="OK") return "border-l-4 border-emerald-300";
+  return "";
+}
 
 /* ================== Validación / conflicto MUELLE ========================= */
 function isValidDockValue(val){ if(val===""||val==null) return true; const num=Number(String(val).trim()); return Number.isFinite(num)&&DOCKS.includes(num); }
@@ -534,7 +547,7 @@ export default function MecoDockManager(){
                                               </select>
                                             ) : isMuelle ? (
                                               <input
-                                                className="h-8 w-full border rounded px-2 bg-white text-sm"
+                                                className="h-8 w-full border rounded px-2 bg-transparent text-sm"
                                                 value={(row?.[h] ?? "").toString()}
                                                 onFocus={()=>{ muPrevRef.current[row.id] = (row?.[h] ?? "").toString(); }}
                                                 onChange={(e)=> updateRowDirect(n, row.id, { MUELLE: e.target.value })}
