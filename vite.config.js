@@ -1,8 +1,8 @@
+// vite.config.ts
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
 export default defineConfig({
   plugins: [react()],
-  resolve: { alias: { '@': '/src' } },
-  base: '/plmeco-docks/' // <- si tu repo se llama distinto, cámbialo
+  base: '/<plmeco-docks>/', // <-- importante para GitHub Pages (Project Pages)
 })
