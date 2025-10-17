@@ -1,4 +1,4 @@
-// MecoDockManager.jsx — Botón SLA Espera eliminado en barra superior + DEFAULT_ORDER personalizado
+// MecoDockManager.jsx — Sin botón de SLA Espera (arriba) ni tarjeta de SLA Espera (resumen)
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -454,8 +454,6 @@ export default function MecoDockManager(){
         </header>
 
         <AlertStrip
-          waitCrit={summaryData.SLA_WAIT.crit}
-          waitWarn={summaryData.SLA_WAIT.warn}
           topeCrit={summaryData.SLA_TOPE.crit}
           topeWarn={summaryData.SLA_TOPE.warn}
           onOpen={(type)=>setSummary({open:true,type})}
@@ -810,8 +808,8 @@ function SelectX({label,value,onChange,options}){ return (
 );}
 
 /* ===================== LÍNEA SUPERIOR DE AVISOS (SLA) ===================== */
-function AlertStrip({ waitCrit, waitWarn, topeCrit, topeWarn, onOpen }) {
-  // Ahora la barra superior solo muestra el botón de SLA Tope
+function AlertStrip({ /*waitCrit, waitWarn,*/ topeCrit, topeWarn, onOpen }) {
+  // Solo mostramos SLA Tope; Espera eliminado
   const hasAnyTope = (topeCrit + topeWarn) > 0;
 
   return (
@@ -821,7 +819,7 @@ function AlertStrip({ waitCrit, waitWarn, topeCrit, topeWarn, onOpen }) {
           <AlertTriangle className="w-4 h-4" /> Avisos SLA:
         </span>
 
-        {/* ✅ Solo botón de SLA Tope */}
+        {/* ✅ ÚNICO BOTÓN: SLA Tope */}
         <button
           onClick={()=>onOpen("SLA_TOPE")}
           className="flex items-center gap-2 px-2 py-1 rounded-full bg-red-100 text-red-800 border border-red-200 hover:bg-red-200 transition"
@@ -842,18 +840,19 @@ function AlertStrip({ waitCrit, waitWarn, topeCrit, topeWarn, onOpen }) {
   );
 }
 
-/* ==================== Barra de resumen & Modal =================== */
+/* ==================== Barra de resumen (sin SLA Espera) =================== */
 function SummaryBar({data,onOpen}){
+  // Eliminamos la tarjeta SLA_WAIT
   const cards = [
     { key:"OK", title:"OK", count:data.OK.length, color:"bg-emerald-600", sub:"Camiones en OK" },
     { key:"CARGANDO", title:"Cargando", count:data.CARGANDO.length, color:"bg-amber-500", sub:"Camiones cargando" },
     { key:"ANULADO", title:"Anulado", count:data.ANULADO.length, color:"bg-red-600", sub:"Camiones anulados" },
     { key:"INCIDENCIAS", title:"Incidencias", count:data.INCIDENCIAS.length, color:"bg-indigo-600", sub:"Con incidencia" },
-    { key:"SLA_WAIT", title:"SLA Espera", count:data.SLA_WAIT.crit + data.SLA_WAIT.warn, color:"bg-amber-600", sub:"Crit / Aviso", badgeL:data.SLA_WAIT.crit, badgeR:data.SLA_WAIT.warn },
     { key:"SLA_TOPE", title:"SLA Tope", count:data.SLA_TOPE.crit + data.SLA_TOPE.warn, color:"bg-red-700", sub:"Crit / Aviso", badgeL:data.SLA_TOPE.crit, badgeR:data.SLA_TOPE.warn },
   ];
+
   return (
-    <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
+    <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
       {cards.map(c=>(
         <button key={c.key} onClick={()=>onOpen(c.key)} className="rounded-2xl p-3 text-left shadow hover:shadow-md transition border bg-white">
           <div className="flex items-center justify-between">
