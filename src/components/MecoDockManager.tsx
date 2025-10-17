@@ -1,15 +1,4 @@
 // src/components/MecoDockManager.tsx
-// App de gestión de muelles (TypeScript) con:
-// - Importación XLSX (detección de cabeceras automática)
-// - Edición en tabla, validación de muelles y conflictos entre lados
-// - Panel lateral (drawer) con botones “Llegada” y “Salida” (ahora)
-// - Carga aérea (destino/m3/bx) por muelle, totales e icono de avión si hay ítems
-// - Resumen superior con contadores y modal de detalle
-// - Icono de warning en botón de muelle cuando se acerca/supera SALIDA TOPE
-// - Reordenación de columnas “drag & drop” y persistencia en localStorage
-// - Exportar .xlsx (simple) y filtro por estado
-// - SIN BroadcastChannel: sincronización en tiempo real vía Socket.IO (useSharedState)
-
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import * as XLSX from "xlsx";
@@ -328,6 +317,7 @@ function checkDockConflict(app: AppState, dockValue: string, currentLado: string
 
 /* ========================= SLA helpers ========================= */
 
+type SlaLevel = "warn" | "crit" | null;
 function getSLA(row: RowData): { tope: { level: SlaLevel; diff: number }, tip: string } {
   const now = new Date();
   const tope = { level: null as SlaLevel, diff: 0 };
@@ -1056,7 +1046,7 @@ export default function MecoDockManager() {
           {/* Panel derecho: botones de muelles en tiempo real */}
           <DockRight
             app={app}
-            docksMap={docksMap}
+            docksMap={useMemo(() => deriveDocks(app.lados), [app.lados])}
             setDockPanel={setDockPanel}
             dockPanel={dockPanel}
           />
@@ -1103,6 +1093,9 @@ export default function MecoDockManager() {
 
 /* ========================= DockRight (grid de muelles) ========================= */
 
+type DockInfoBusy = { state: "ESPERA" | "OCUPADO"; row: RowData; lado: string };
+type DockInfo = { state: "LIBRE" } | DockInfoBusy;
+
 function DockRight({ app, docksMap, setDockPanel, dockPanel }:{
   app: AppState;
   docksMap: Map<number, DockInfo>;
@@ -1111,7 +1104,7 @@ function DockRight({ app, docksMap, setDockPanel, dockPanel }:{
 }) {
   function shouldShowTopeIcon(info: DockInfo): boolean {
     if (info.state === "LIBRE") return false;
-    const row = info.row;
+    const row = (info as DockInfoBusy).row;
     if (!row) return false;
     const salidaReal = (row["SALIDA REAL"] || "").toString().trim();
     if (salidaReal) return false;
@@ -1122,7 +1115,7 @@ function DockRight({ app, docksMap, setDockPanel, dockPanel }:{
   }
   function iconSeverity(info: DockInfo): SlaLevel {
     if (info.state === "LIBRE") return null;
-    const row = info.row!;
+    const row = (info as DockInfoBusy).row!;
     const salidaReal = (row["SALIDA REAL"] || "").toString().trim();
     if (salidaReal) return null;
     const dTope = parseFlexibleToDate(row["SALIDA TOPE"] || "");
@@ -1151,7 +1144,7 @@ function DockRight({ app, docksMap, setDockPanel, dockPanel }:{
         <div className="grid grid-cols-2 xs:grid-cols-3 gap-2">
           {DOCKS.map((d)=>{
             const info = docksMap.get(d) || { state:"LIBRE" as const };
-            const color = dockColor(info.state);
+            const color = dockColor(info.state as any);
             const label = `${d}`;
             const tipBase = (info.state !== "LIBRE" && (info as DockInfoBusy).row)
               ? `${label} • ${(info as DockInfoBusy).row.MATRICULA || "?"} • ${(info as DockInfoBusy).row.DESTINO || "?"} • ${((info as DockInfoBusy).row.ESTADO || "") || "—"}`
@@ -1346,8 +1339,8 @@ function DockDrawer({
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <SelectX label="Incidencias" value={(row["INCIDENCIAS"] ?? "") as any} onChange={(v)=>setField(lado, row.id, "INCIDENCIAS", v)} options={INCIDENTES} />
-                <SelectX label="Estado" value={(row.ESTADO ?? "") as Estado | ""} onChange={(v)=>setField(lado, row.id, "ESTADO", v as Estado | "")} options={CAMION_ESTADOS} />
+                <SelectX label="Incidencias" value={(row["INCIDENCIAS"] ?? "") as any} onChange={(v)=>setField(lado, row.id, "INCIDENCIAS", v)} options={["RETRASO TRANSPORTISTA","RETRASO CD","RETRASO DOCUMENTACION","CAMION ANULADO","CAMION NO APTO"]} />
+                <SelectX label="Estado" value={(row.ESTADO ?? "") as Estado | ""} onChange={(v)=>setField(lado, row.id, "ESTADO", v as Estado | "")} options={["OK","CARGANDO","ANULADO"]} />
               </div>
 
               <div>
@@ -1379,15 +1372,15 @@ function DockDrawer({
                       <div>Acc.</div>
                     </div>
 
-                    {airItems(row).length===0 && (
+                    {(!row._AIR_ITEMS || row._AIR_ITEMS.length===0) && (
                       <div className="px-3 py-3 text-sm text-muted-foreground border-x border-b rounded-b">
                         No hay destinos aéreos añadidos para este camión.
                       </div>
                     )}
 
-                    {airItems(row).length>0 && (
+                    {(row._AIR_ITEMS && row._AIR_ITEMS.length>0) && (
                       <div className="border-x border-b rounded-b divide-y">
-                        {airItems(row).map(item=>(
+                        {row._AIR_ITEMS.map(item=>(
                           <div key={item.id} className="grid grid-cols-[minmax(220px,1fr)_110px_110px_60px] gap-2 px-2 py-2 items-center">
                             <input
                               className="h-9 w-full border rounded px-2 bg-white text-sm"
@@ -1419,7 +1412,7 @@ function DockDrawer({
 
                         {/* Totales */}
                         {(() => {
-                          const t = totalsAir(airItems(row));
+                          const t = totalsAir(row._AIR_ITEMS || []);
                           return (
                             <div className="grid grid-cols-[minmax(220px,1fr)_110px_110px_60px] gap-2 px-2 py-2 bg-slate-50/70 items-center">
                               <div className="text-sm font-medium text-right pr-2">Totales</div>
@@ -1521,7 +1514,7 @@ function ToolbarX({
           onChange={(e)=>setFilterEstado((e.target.value as Estado) || "TODOS")}
         >
           <option value="">Todos</option>
-          {CAMION_ESTADOS.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+          {["OK","CARGANDO","ANULADO"].map(opt => <option key={opt} value={opt}>{opt}</option>)}
         </select>
       </div>
     </div>
@@ -1686,7 +1679,7 @@ function TemplatesTab({ templates, setTemplates }:{
                   />
                 </div>
                 <div className="flex items-center gap-2 flex-wrap">
-                  {DAYS.map(d=>(
+                  {["L","M","X","J","V","S","D"].map(d=>(
                     <label key={d} className={`border rounded px-2 py-0.5 text-xs cursor-pointer ${t.dias?.includes(d) ? "bg-slate-800 text-white" : "bg-white"}`}>
                       <input type="checkbox" className="hidden" checked={t.dias?.includes(d) || false} onChange={()=>toggleDay(t.id, d)} />
                       {d}
@@ -1707,4 +1700,3 @@ function TemplatesTab({ templates, setTemplates }:{
     </Card>
   );
 }
-
