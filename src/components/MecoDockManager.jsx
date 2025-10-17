@@ -109,7 +109,7 @@ const HEADER_TEXT_CLASS = "text-[9px] leading-none font-semibold text-muted-fore
 
 /* ==================== Anchos forzados en PX ==================== */
 const PX_TIME = 80;           // LLEGADA y SALIDA
-the PX_TIME_REAL = 100;     // LLEGADA REAL y SALIDA REAL
+const PX_TIME_REAL = 100;     // LLEGADA REAL y SALIDA REAL
 const PX_TIME_TOPE = 100;     // SALIDA TOPE
 const PX_MUELLE = 90;         // MUELLE
 const PX_ESTADO = 130;        // ESTADO
