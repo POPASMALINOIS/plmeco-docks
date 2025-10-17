@@ -11,13 +11,11 @@ import * as XLSX from "xlsx";
 import { motion } from "framer-motion";
 
 /* ========================= PARÁMETROS SLA ====================== */
-// Umbral para barra superior (interno, ya no pinta líneas en tabla):
-const SLA_TOPE_WARN_MIN = 15;
-// Umbral para ICONO en los muelles del panel lateral:
-const SLA_TOPE_ICON_PREMIN = 5;
+const SLA_TOPE_WARN_MIN = 15;       // para contadores/resúmenes (no pinta en tabla)
+const SLA_TOPE_ICON_PREMIN = 5;     // icono en panel muelles (≤5 min o rebasado)
 /* ============================================================== */
 
-// Muelles permitidos (actualizado)
+// Muelles permitidos
 const DOCKS = [
   312,313,314,315,316,317,318,319,320,321,322,323,324,325,326,327,328,329,330,331,332,333,334,335,336,337,
   338,339,340,341,342,343,344,345,346,347,348,349,350,
@@ -54,7 +52,7 @@ const DEFAULT_ORDER = [
 ];
 const EXPECTED_KEYS = [...new Set([...BASE_HEADERS, ...EXTRA_HEADERS])];
 
-/* === Colorear solo hasta "SALIDA TOPE" (incluida) por ESTADO === */
+// Colorear celdas hasta "SALIDA TOPE" por ESTADO
 const COLOR_UP_TO = new Set([
   "TRANSPORTISTA","MATRICULA","DESTINO","MUELLE","PRECINTO",
   "LLEGADA","LLEGADA REAL","SALIDA","SALIDA REAL","SALIDA TOPE",
@@ -94,7 +92,6 @@ function normalizeEstado(v){
   if(raw===""||raw==="*"||raw==="-"||/^N\/?A$/i.test(raw)) return "";
   const up=raw.toUpperCase(); if(up==="OK"||up==="CARGANDO"||up==="ANULADO") return up; return up;
 }
-
 function parseFlexibleToDate(s){
   const str=(s??"").toString().trim(); if(!str) return null;
   const hm=/^(\d{1,2}):(\d{2})$/.exec(str);
@@ -112,7 +109,7 @@ const HEADER_TEXT_CLASS = "text-[9px] leading-none font-semibold text-muted-fore
 
 /* ==================== Anchos forzados en PX ==================== */
 const PX_TIME = 80;           // LLEGADA y SALIDA
-const PX_TIME_REAL = 100;     // LLEGADA REAL y SALIDA REAL
+the PX_TIME_REAL = 100;     // LLEGADA REAL y SALIDA REAL
 const PX_TIME_TOPE = 100;     // SALIDA TOPE
 const PX_MUELLE = 90;         // MUELLE
 const PX_ESTADO = 130;        // ESTADO
@@ -220,7 +217,6 @@ function checkDockConflict(app,dockValue,currentLado,currentRowId){
 }
 
 /* =============================== SLA helpers =============================== */
-// Solo SLA de SALIDA TOPE (para resúmenes y drawer lateral; no colorea la tabla central).
 function getSLA(row){
   const now=new Date();
   const tope={level:null,diff:0};
@@ -229,8 +225,8 @@ function getSLA(row){
   if(!salidaReal && salidaTope){
     const diffMin=minutesDiff(now,salidaTope);
     tope.diff=diffMin;
-    if(diffMin>0) tope.level="crit";         // ya superado el tope
-    else if(diffMin>=-SLA_TOPE_WARN_MIN) tope.level="warn"; // cerca del tope
+    if(diffMin>0) tope.level="crit";
+    else if(diffMin>=-SLA_TOPE_WARN_MIN) tope.level="warn";
   }
   const parts=[];
   if(tope.level==="crit") parts.push(`Salida tope superada (+${tope.diff} min)`);
@@ -501,7 +497,7 @@ export default function MecoDockManager(){
                             </div>
                           </div>
 
-                          {/* Filas (sin avisos SLA visuales) */}
+                          {/* Filas (sin avisos SLA visuales en tabla) */}
                           <div>
                             {visible.map((row)=>{
                               const estado=(row?.ESTADO||"").toString();
@@ -589,16 +585,16 @@ export default function MecoDockManager(){
 function DockRight({app,setDockPanel,dockPanel}){
   const docks=useMemo(()=>deriveDocks(app?.lados||{}),[app]);
 
-  // ⚠️ Icono aviso (≤5 min o rebasado SALIDA TOPE sin SALIDA REAL)
+  // Icono aviso (≤5 min o rebasado SALIDA TOPE sin SALIDA REAL)
   function shouldShowTopeIcon(info){
     const row = info?.row;
     if(!row) return false;
     const salidaReal = (row["SALIDA REAL"]||"").toString().trim();
-    if(salidaReal) return false; // ya salió
+    if(salidaReal) return false;
     const dTope = parseFlexibleToDate(row["SALIDA TOPE"] || "");
     if(!dTope) return false;
     const diff = minutesDiff(new Date(), dTope); // + => pasado; - => faltan minutos
-    return diff >= -SLA_TOPE_ICON_PREMIN; // faltan ≤5 min o pasado
+    return diff >= -SLA_TOPE_ICON_PREMIN;
   }
   function iconSeverity(info){
     const row = info?.row;
@@ -608,8 +604,8 @@ function DockRight({app,setDockPanel,dockPanel}){
     const dTope = parseFlexibleToDate(row["SALIDA TOPE"] || "");
     if(!dTope) return null;
     const diff = minutesDiff(new Date(), dTope);
-    if(diff > 0) return "crit";      // rebasado
-    if(diff >= -SLA_TOPE_ICON_PREMIN) return "warn"; // en ventana de 5'
+    if(diff > 0) return "crit";
+    if(diff >= -SLA_TOPE_ICON_PREMIN) return "warn";
     return null;
   }
 
@@ -637,7 +633,7 @@ function DockRight({app,setDockPanel,dockPanel}){
               : `${label} • Libre`;
 
             const showIcon = shouldShowTopeIcon(info);
-            const sev = iconSeverity(info); // "crit" | "warn" | null
+            const sev = iconSeverity(info);
             const iconTitle = sev==="crit" ? "SALIDA TOPE rebasada" : "SALIDA TOPE en ≤5 min";
 
             const btn=(
@@ -907,6 +903,15 @@ function SummaryModal({open,type,data,onClose}){
   else if(type==="ANULADO"){ title="Resumen · Anulado"; rows=data.ANULADO; }
   else if(type==="INCIDENCIAS"){ title="Resumen · Incidencias"; rows=data.INCIDENCIAS; }
   else if(type==="SLA_TOPE"){ title="Resumen · SLA Tope"; rows=data.SLA_TOPE.rows; }
+
+  // Etiqueta de la última columna y función de contenido según el tipo
+  const lastColHeader = (type==="INCIDENCIAS") ? "Incidencias" : (type==="SLA_TOPE" ? "Estado / Motivo" : "Estado");
+  const getLastColValue = (r) => {
+    if(type==="INCIDENCIAS") return r.INCIDENCIAS || "—";
+    if(type==="SLA_TOPE") return r._sla?.tip || r.ESTADO || "—";
+    return r.ESTADO || "—";
+  };
+
   return (
     <>
       <div className="fixed inset-0 bg-black/30 z-[9998]" onClick={onClose}/>
@@ -917,7 +922,7 @@ function SummaryModal({open,type,data,onClose}){
         </div>
         <div className="p-3 max-h-[75vh] overflow-auto">
           <div className="grid grid-cols-[90px_140px_minmax(140px,1fr)_80px_120px_120px_minmax(160px,1fr)] gap-2 text-[11px] font-semibold text-muted-foreground uppercase tracking-wide mb-2">
-            <div>Lado</div><div>Matrícula</div><div>Destino</div><div>Muelle</div><div>Llegada real</div><div>Salida real</div><div>{type==="INCIDENCIAS"?"Incidencias":"Estado / Motivo"}</div>
+            <div>Lado</div><div>Matrícula</div><div>Destino</div><div>Muelle</div><div>Llegada real</div><div>Salida real</div><div>{lastColHeader}</div>
           </div>
           <div className="divide-y">
             {rows.map((r)=>(
@@ -928,7 +933,7 @@ function SummaryModal({open,type,data,onClose}){
                 <div>{r.MUELLE||"—"}</div>
                 <div>{r["LLEGADA REAL"]||"—"}</div>
                 <div>{r["SALIDA REAL"]||"—"}</div>
-                <div>{r._sla?.tip || r.ESTADO || r.INCIDENCIAS || "—"}</div>
+                <div>{getLastColValue(r)}</div>
               </div>
             ))}
             {rows.length===0 && <div className="text-sm text-muted-foreground py-6 text-center">No hay elementos para mostrar.</div>}
