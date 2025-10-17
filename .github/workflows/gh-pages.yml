@@ -53,8 +53,7 @@ jobs:
       - name: Upload artifact to Pages
         uses: actions/upload-pages-artifact@v3
         with:
-          # ⬇️ CAMBIA ESTO si tu carpeta final NO es "out"
-          path: ./out
+          path: ./dist
 
   deploy:
     needs: build
