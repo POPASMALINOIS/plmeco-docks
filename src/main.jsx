@@ -1,10 +1,14 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App.jsx";
-import "./index.css"; // ⟵ IMPORTANTE (o './globals.css')
+import "./index.css";
+
+import CollabProvider from "@/collab/CollabProvider";
 
 ReactDOM.createRoot(document.getElementById("root")).render(
   <React.StrictMode>
-    <App />
+    <CollabProvider>
+      <App />
+    </CollabProvider>
   </React.StrictMode>
 );
