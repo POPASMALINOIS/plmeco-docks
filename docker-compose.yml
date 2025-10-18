@@ -1,19 +1,31 @@
 version: "3.9"
+
 services:
   backend:
-    build: ./backend
+    build:
+      context: ./backend
+    image: plmeco-sync-backend:latest
     container_name: plmeco-backend
-    env_file: ./backend/.env   # <-- este archivo se crea en el servidor, NO en el repo
+    restart: unless-stopped
+    environment:
+      - PORT=4000
+      - TOKEN=${TOKEN}          # define TOKEN en un .env del compose (no confundir con backend/.env)
+      - CORS_ORIGIN=*
     ports:
       - "4000:4000"
-    restart: unless-stopped
 
   frontend:
     build:
       context: .
+      dockerfile: Dockerfile.frontend
+    image: plmeco-frontend:latest
     container_name: plmeco-frontend
-    depends_on:
-      - backend
+    restart: unless-stopped
+    environment:
+      # Estas dos variables solo afectan si tu app las lee en runtime (en este setup se inyectan en build)
+      - VITE_BACKEND_URL=http://localhost:4000
+      - VITE_BACKEND_TOKEN=${TOKEN}
     ports:
       - "8080:80"
-    restart: unless-stopped
+    depends_on:
+      - backend
