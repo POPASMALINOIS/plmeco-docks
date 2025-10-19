@@ -1,0 +1,29 @@
+version: "3.9"
+
+services:
+  collab:
+    image: ghcr.io/POPASMALINOIS/plmeco-docks-collab:latest
+    container_name: collab
+    restart: unless-stopped
+    # Mantener el puerto WS solo interno (loopback)
+    ports:
+      - "127.0.0.1:1234:1234"
+
+  caddy:
+    image: caddy:2
+    container_name: caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      # Caddyfile relativo a este compose
+      - ../../proxy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      - ACME_AGREE=true
+
+volumes:
+  caddy_data:
+  caddy_config:
