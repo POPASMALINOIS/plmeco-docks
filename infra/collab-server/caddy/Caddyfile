@@ -1,0 +1,28 @@
+# Reemplaza collab.example.com por tu dominio real
+collab.example.com {
+  encode zstd gzip
+
+  @websocket {
+    header Connection *Upgrade*
+    header Upgrade websocket
+  }
+
+  reverse_proxy 127.0.0.1:1234 {
+    flush_interval -1
+    header_up Host {host}
+    header_up X-Real-IP {remote_host}
+    header_up X-Forwarded-For {remote_host}
+    header_up X-Forwarded-Proto {scheme}
+  }
+
+  # Allowlist opcional por IP (descomentar y ajustar rangos)
+  # @allowedIPs {
+  #   remote_ip 10.0.0.0/8
+  #   remote_ip 172.16.0.0/12
+  #   remote_ip 192.168.0.0/16
+  # }
+  # handle {
+  #   @denied not @allowedIPs
+  #   respond @denied 403
+  # }
+}
